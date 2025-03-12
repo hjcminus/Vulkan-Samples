@@ -8,8 +8,8 @@
 ## Projects
 
 ### mesh shader
-  Using the mesh shader to dynamically generate a triangle mesh of a height field.
-  Press the F2 key to toggle wireframe and fill render mode.
-  Hold the left button and move to rotate the camera.
-  Using W, S, A, and D keys to navigate through the 3D scene.
+  - Using the mesh shader to dynamically generate a triangle mesh of a height field.
+  - Press the F2 key to toggle wireframe and fill render mode.
+  - Hold the left button and move to rotate the camera.
+  - Using W, S, A, and D keys to navigate through the 3D scene.
   
