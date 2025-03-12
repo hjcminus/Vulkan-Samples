@@ -139,7 +139,7 @@ MeshShaderDemo::MeshShaderDemo():
 	wireframe_mode_(true)
 {
 #if defined(_WIN32)
-	cfg_demo_win_class_name_ = TEXT("Mesh shader (F2: toggle wirefame & fill mode)");
+	cfg_demo_win_class_name_ = TEXT("Mesh shader (F2: toggle wireframe & fill mode)");
 #endif
 
 	vk_device_create_next_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
