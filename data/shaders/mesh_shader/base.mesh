@@ -5,28 +5,131 @@ layout (binding = 0) uniform BufferMat {
     mat4 mvp;
 } buffer_mat;
 
-layout(binding = 1) buffer Vertices {
-    vec4 v[];
-} vertices;
+layout (binding = 1) uniform Terrain {
+    int vertex_count_per_edge;
+} terrain;
 
-layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout (triangles, max_vertices = 3, max_primitives = 1) out;
+layout(binding = 2) buffer Heights {
+    float z[];
+} heights;
+
+layout(binding = 3) buffer ColorTable {
+    vec4 color[];
+} color_table;
+
+
+/*
+  The local_size_x, local_size_y, and local_size_z qualifiers are used to declare a fixed workgroup
+  size by the mesh shader in the first, second, and third dimension, respectively. If a shader does
+  not specify a size for one of the dimensions, that dimension will have a size of 1.
+
+ */
+// Typical limit: 128 invocations.
+layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;   // workgroup size: 8 * 8 * 1
+
+
+/*
+ The vertex count identifier max_vertices is used to specify the maximum number of vertices the
+ shader will ever emit in a single invocation.
+ */
+
+// Typical limit: 256 vertices/primitives
+layout (triangles, max_vertices = 4, max_primitives = 2) out;
 
 layout (location = 0) out VertexOutput {
 	vec4 color;
 } vertex_output[];
 
+/*
+    The built-in variable gl_LocalInvocationIndex is a compute, task, or mesh
+    shader input variable that contains the one-dimensional representation of
+    the gl_LocalInvocationID.  // for this demo, range from 0 to 63 ?
+
+
+    gl_GlobalInvocationID:
+        position in global work group, type uvec3
+
+    gl_PrimitiveTriangleIndicesEXT
+        built-in array, type uvec3
+
+    // write only access
+    out gl_MeshPerVertexEXT {
+        vec4 gl_Position;
+        float gl_PointSize;
+        float gl_ClipDistance[];
+        float gl_CullDistance[];
+    } gl_MeshVerticesEXT[];
+
+    // write only access
+    perprimitiveEXT out gl_MeshPerPrimitiveEXT {
+        int gl_PrimitiveID;
+        int gl_Layer;
+        int gl_ViewportIndex;
+        bool gl_CullPrimitiveEXT;
+        int gl_PrimitiveShadingRateEXT;
+    } gl_MeshPrimitivesEXT[];
+
+ */
+
+// https://github.com/KhronosGroup/GLSL/blob/main/extensions/ext/GLSL_EXT_mesh_shader.txt
 void main() {
-    // SetMeshOutputsEXT(uint vertexCount, uint primitiveCount);
-    SetMeshOutputsEXT(3, 1);
+    SetMeshOutputsEXT(4 /* vertexCount */, 2 /* primitiveCount */);
 
-	gl_MeshVerticesEXT[0].gl_Position = buffer_mat.mvp * vertices.v[0];
-	gl_MeshVerticesEXT[1].gl_Position = buffer_mat.mvp * vertices.v[1];
-	gl_MeshVerticesEXT[2].gl_Position = buffer_mat.mvp * vertices.v[2];
+	uint x = gl_GlobalInvocationID.x;
+	uint y = gl_GlobalInvocationID.y;
 
-	vertex_output[0].color = vec4(1.0f, 0.0f, 0.0f, 1.0f);
-	vertex_output[1].color = vec4(0.0f, 1.0f, 0.0f, 1.0f);
-	vertex_output[2].color = vec4(0.0f, 0.0f, 1.0f, 1.0f);
+    /*
+     this demo:
 
-	gl_PrimitiveTriangleIndicesEXT[gl_LocalInvocationIndex] = uvec3(0, 1, 2);
+     vertex index
+
+     3---2
+     | / |
+     |/  |
+     0---1
+
+     */
+
+    float h0 = heights.z[y * terrain.vertex_count_per_edge + x];
+    float h1 = heights.z[y * terrain.vertex_count_per_edge + x + 1];
+    float h2 = heights.z[(y + 1) * terrain.vertex_count_per_edge + x + 1];
+    float h3 = heights.z[(y + 1) * terrain.vertex_count_per_edge + x];
+
+	gl_MeshVerticesEXT[0].gl_Position = buffer_mat.mvp * vec4(x, y, h0, 1.0f);
+	gl_MeshVerticesEXT[1].gl_Position = buffer_mat.mvp * vec4(x + 1.0f, y, h1, 1.0f);
+	gl_MeshVerticesEXT[2].gl_Position = buffer_mat.mvp * vec4(x + 1.0f, y + 1.0f, h2, 1.0f);
+    gl_MeshVerticesEXT[3].gl_Position = buffer_mat.mvp * vec4(x, y + 1.0f, h3, 1.0f);
+
+    // note: no range check
+	vertex_output[0].color = color_table.color[int(h0)];
+	vertex_output[1].color = color_table.color[int(h1)];
+	vertex_output[2].color = color_table.color[int(h2)];
+    vertex_output[3].color = color_table.color[int(h3)];
+
+    /*
+      // https://github.com/KhronosGroup/GLSL/blob/main/extensions/ext/GLSL_EXT_mesh_shader.txt
+      an array of vertex index values written to one of the appropriate
+      built-in output arrays (gl_PrimitivePointIndicesEXT, 
+      gl_PrimitiveLineIndicesEXT or gl_PrimitiveTriangleIndicesEXT), where each
+      output element contains one, two, or three indices that
+      identify the output vertices in the mesh used to form the primitive.
+
+
+      The output array variables gl_PrimitivePointIndicesEXT[], 
+      gl_PrimitiveLineIndicesEXT[] or gl_PrimitiveTriangleIndicesEXT[] are only 
+      available in the mesh language.
+      Depending on the output primitive type declared using a
+      layout qualifier, the appropriate array element specifies 
+      the indices of the vertices making up the primitive.
+      All index values must be in the range [0, N-1], where N is the value of
+      the "primitiveCount" argument of a previous call to SetMeshOutputsEXT.
+      Out-of-bounds index values will result in undefined behavior. 
+      Each array element must be written as a whole, partial writes to the 
+      vector components for line and triangle primitives is not allowed.
+
+     */
+
+
+	gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0, 1, 2);
+    gl_PrimitiveTriangleIndicesEXT[1] = uvec3(2, 3, 0);
 }

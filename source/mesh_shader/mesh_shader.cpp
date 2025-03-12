@@ -3,6 +3,9 @@
  *****************************************************************************/
 
 #include "vk_demo.h"
+#include "gen_terrain_mid_point.h"
+
+#include "../common/funcs.h"
 
 /*
 ================================================================================
@@ -27,8 +30,12 @@ private:
 		VkDescriptorBufferInfo  buffer_info_;
 	};
 
-	struct ubo_s {
+	struct ubo_mvp_s {
 		glm::mat4			model_view_proj_mat_;
+	};
+
+	struct ubo_terrain_s {
+		int32_t				vertex_count_per_edge_;
 	};
 
 	// VkDeviceCreateInfo::pNext chain
@@ -42,24 +49,35 @@ private:
 	VkDescriptorSetLayout   vk_descriptorset_layout_;
 	VkDescriptorSet         vk_descriptorset_;
 
+	VkDescriptorPool        vk_descriptor_pool2_;
+	VkDescriptorSetLayout   vk_descriptorset_layout2_;
+	VkDescriptorSet         vk_descriptorset2_;
+
 	// pipeline
 	VkPipelineCache         vk_pipeline_cache_;
 	VkPipelineLayout        vk_pipeline_layout_;
-	VkPipeline              vk_pipeline_;
+	VkPipeline              vk_pipeline_wireframe_;
+	VkPipeline				vk_pipeline_fill_;
 
-	buffer_s				uniform_buffer_;
-	buffer_s				shader_storage_buffer_;
+	buffer_s				uniform_buffer_mvp_;
+	buffer_s				uniform_buffer_terrain_;
+	buffer_s				shader_storage_buffer_heights_;
+	buffer_s				shader_storage_buffer_color_table_;
 
-	void					AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) override;
-	void					AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) override;
+	bool					wireframe_mode_;
+
+	void					AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const override;
+	void					AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const override;
+
+	void					KeyF2Down() override;
 
 	// uniform buffer
-	bool					CreateUniformBuffer();
-	void					DestroyUniformBuffer();
+	bool					CreateUniformBuffers();
+	void					DestroyUniformBuffers();
 
-	// shader storage buffer
-	bool					CreateShaderStorageBuffer();
-	void					DestroyShaderStorageBuffer();
+	// shader storage buffers
+	bool					CreateShaderStorageBuffers();
+	void					DestroyShaderStorageBuffers();
 
 	// descriptor set pool
 	bool					CreateDescriptorPool();
@@ -73,6 +91,18 @@ private:
 	bool					AllocDemoDescriptorSet();
 	void					FreeDemoDescriptorSet();
 
+	// descriptor set pool2
+	bool					CreateDescriptorPool2();
+	void					DestroyDescriptorPool2();
+
+	// descriptor set layout2
+	bool					CreateDescriptorSetLayout2();
+	void					DestroyDescriptorSetLayout2();
+
+	// descriptor set2
+	bool					AllocDemoDescriptorSet2();
+	void					FreeDemoDescriptorSet2();
+
 	// pipeline cache
 	bool					CreatePipelineCache();
 	void					DestroyPipelineCache();
@@ -82,13 +112,15 @@ private:
 	void					DestroyPipelineLayout();
 
 	// pipeline
-	bool					CreatePipeline();
-	void					DestroyPipeline();
+	bool					CreatePipelines();
+	void					DestroyPipelines();
 
 	// build command buffer
-	void					BuildCommandBuffer();
+	void					BuildCommandBuffer(VkPipeline pipeline);
 
-	void					UpdateUniformBuffers();
+	void					UpdateMVPUniformBuffer();
+
+	void					UpdateUniformBuffer(buffer_s & buffer, const std::byte* host_data, size_t host_data_size);
 
 };
 
@@ -97,12 +129,17 @@ MeshShaderDemo::MeshShaderDemo():
 	vk_descriptor_pool_(VK_NULL_HANDLE),
 	vk_descriptorset_layout_(VK_NULL_HANDLE),
 	vk_descriptorset_(VK_NULL_HANDLE),
+	vk_descriptor_pool2_(VK_NULL_HANDLE),
+	vk_descriptorset_layout2_(VK_NULL_HANDLE),
+	vk_descriptorset2_(VK_NULL_HANDLE),
 	vk_pipeline_cache_(VK_NULL_HANDLE),
 	vk_pipeline_layout_(VK_NULL_HANDLE),
-	vk_pipeline_(VK_NULL_HANDLE)
+	vk_pipeline_wireframe_(VK_NULL_HANDLE),
+	vk_pipeline_fill_(VK_NULL_HANDLE),
+	wireframe_mode_(true)
 {
 #if defined(_WIN32)
-	cfg_demo_win_class_name_ = TEXT("Mesh shader");
+	cfg_demo_win_class_name_ = TEXT("Mesh shader (F2: toggle wirefame & fill mode)");
 #endif
 
 	vk_device_create_next_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
@@ -116,8 +153,10 @@ MeshShaderDemo::MeshShaderDemo():
 	// will assign to VkDeviceCreateInfo::pNext field to enable task & mesh shaders
 	vk_device_create_next_chain_ = &vk_device_create_next_;
 
-	memset(&uniform_buffer_, 0, sizeof(uniform_buffer_));
-	memset(&shader_storage_buffer_, 0, sizeof(shader_storage_buffer_));
+	memset(&uniform_buffer_mvp_, 0, sizeof(uniform_buffer_mvp_));
+	memset(&uniform_buffer_terrain_, 0, sizeof(uniform_buffer_terrain_));
+	memset(&shader_storage_buffer_heights_, 0, sizeof(shader_storage_buffer_heights_));
+	memset(&shader_storage_buffer_color_table_, 0, sizeof(shader_storage_buffer_color_table_));
 }
 
 MeshShaderDemo::~MeshShaderDemo() {
@@ -136,11 +175,11 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
-	if (!CreateUniformBuffer()) {
+	if (!CreateUniformBuffers()) {
 		return false;
 	}
 
-	if (!CreateShaderStorageBuffer()) {
+	if (!CreateShaderStorageBuffers()) {
 		return false;
 	}
 
@@ -156,6 +195,18 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
+	if (!CreateDescriptorPool2()) {
+		return false;
+	}
+
+	if (!CreateDescriptorSetLayout2()) {
+		return false;
+	}
+
+	if (!AllocDemoDescriptorSet2()) {
+		return false;
+	}
+
 	if (!CreatePipelineCache()) {
 		return false;
 	}
@@ -164,11 +215,11 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
-	if (!CreatePipeline()) {
+	if (!CreatePipelines()) {
 		return false;
 	}
 
-	BuildCommandBuffer();
+	BuildCommandBuffer(vk_pipeline_wireframe_);
 
 	enable_display_ = true;
 
@@ -176,26 +227,26 @@ bool MeshShaderDemo::Init() {
 }
 
 void MeshShaderDemo::Shutdown() {
-	DestroyPipeline();
+	DestroyPipelines();
 	DestroyPipelineLayout();
 	DestroyPipelineCache();
+	FreeDemoDescriptorSet2();
+	DestroyDescriptorSetLayout2();
+	DestroyDescriptorPool2();
 	FreeDemoDescriptorSet();
 	DestroyDescriptorSetLayout();
 	DestroyDescriptorPool();
-	DestroyShaderStorageBuffer();
-	DestroyUniformBuffer();
+	DestroyShaderStorageBuffers();
+	DestroyUniformBuffers();
 
 	VkDemo::Shutdown();
 }
 
 void MeshShaderDemo::Display() {
-	static int g_display_count = 0;
-	g_display_count++;
-
 	uint32_t current_image_idx = 0;
 	VkResult rt;
 
-	UpdateUniformBuffers();
+	UpdateMVPUniformBuffer();
 
 	// If semaphore is not VK_NULL_HANDLE, it must not have any uncompleted signal or wait
 	//   operations pending
@@ -203,11 +254,6 @@ void MeshShaderDemo::Display() {
 	// semaphore and fence must not both be equal to VK_NULL_HANDLE
 	rt = vkAcquireNextImageKHR(vk_device_, vk_swapchain_, UINT64_MAX /* never timeout */,
 		vk_semaphore_present_complete_, VK_NULL_HANDLE, &current_image_idx);
-
-	// test_wait_semaphore(demo); // crash
-
-	printf("Display frame = %d, current_image_idx = %u\n",
-		g_display_count, current_image_idx);
 
 	if (rt != VK_SUCCESS) {
 		printf("vkAcquireNextImageKHR error\n");
@@ -264,12 +310,12 @@ void MeshShaderDemo::Display() {
 	}
 }
 
-void MeshShaderDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) {
+void MeshShaderDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
 	// required by mesh shader
 	extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 }
 
-void MeshShaderDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) {
+void MeshShaderDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const {
 	// required by mesh shader
 	extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
 	extensions.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
@@ -278,90 +324,134 @@ void MeshShaderDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& ext
 	extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
 }
 
+void MeshShaderDemo::KeyF2Down() {
+	wireframe_mode_ = !wireframe_mode_;
+	BuildCommandBuffer(wireframe_mode_ ? vk_pipeline_wireframe_ : vk_pipeline_fill_);
+}
+
 // uniform buffer
-bool MeshShaderDemo::CreateUniformBuffer() {
-	VkBufferCreateInfo create_info = {};
+bool MeshShaderDemo::CreateUniformBuffers() {
 
-	create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = 0;
-	create_info.size = sizeof(ubo_s);
-	create_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-	create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	create_info.queueFamilyIndexCount = 0;
-	create_info.pQueueFamilyIndices = nullptr;  // is a pointer to an array of queue families that will access this buffer. It is
-	// ignored if sharingMode is not VK_SHARING_MODE_CONCURRENT.
+	auto CreateUniformBuffer = [&](buffer_s & buffer, uint32_t req_size) -> bool {
+		VkBufferCreateInfo create_info = {
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.pNext = nullptr,
+			.flags = 0,
+			.size = (VkDeviceSize)req_size,
+			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.queueFamilyIndexCount = 0,
+			.pQueueFamilyIndices = nullptr  // is a pointer to an array of queue families that will access this buffer.
+			                                // It is ignored if sharingMode is not VK_SHARING_MODE_CONCURRENT.
+		};		
 
-	if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &uniform_buffer_.buffer_)) {
-		return false;
-	}
+		if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &buffer.buffer_)) {
+			return false;
+		}
 
-	VkMemoryRequirements mem_req = {};
-	vkGetBufferMemoryRequirements(vk_device_, uniform_buffer_.buffer_, &mem_req);
+		VkMemoryRequirements mem_req = {};
+		vkGetBufferMemoryRequirements(vk_device_, buffer.buffer_, &mem_req);
 
-	VkMemoryAllocateInfo mem_alloc_info = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.pNext = nullptr,
-		.allocationSize = mem_req.size,
-		.memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		VkMemoryAllocateInfo mem_alloc_info = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.pNext = nullptr,
+			.allocationSize = mem_req.size,
+			.memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		};
+
+		if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &buffer.memory_)) {
+			return false;
+		}
+
+		if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
+			return false;
+		}
+
+		buffer.buffer_info_.buffer = buffer.buffer_;
+		buffer.buffer_info_.offset = 0;
+		buffer.buffer_info_.range = (VkDeviceSize)req_size;
 	};
 
-	if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &uniform_buffer_.memory_)) {
+	if (!CreateUniformBuffer(uniform_buffer_mvp_, (uint32_t)sizeof(ubo_mvp_s))) {
 		return false;
 	}
 
-	if (VK_SUCCESS != vkBindBufferMemory(vk_device_, uniform_buffer_.buffer_, uniform_buffer_.memory_, 0)) {
+	if (!CreateUniformBuffer(uniform_buffer_terrain_, (uint32_t)sizeof(ubo_terrain_s))) {
 		return false;
 	}
-
-	uniform_buffer_.buffer_info_.buffer = uniform_buffer_.buffer_;
-	uniform_buffer_.buffer_info_.offset = 0;
-	uniform_buffer_.buffer_info_.range = (VkDeviceSize)sizeof(ubo_s);
 
 	return true;
 }
 
-void MeshShaderDemo::DestroyUniformBuffer() {
-	if (uniform_buffer_.memory_) {
-		vkFreeMemory(vk_device_, uniform_buffer_.memory_, nullptr);
-		uniform_buffer_.memory_ = VK_NULL_HANDLE;
-	}
+void MeshShaderDemo::DestroyUniformBuffers() {
+	auto DestroyUniformBuffer = [&](buffer_s& buffer) {
+		if (buffer.memory_) {
+			vkFreeMemory(vk_device_, buffer.memory_, nullptr);
+			buffer.memory_ = VK_NULL_HANDLE;
+		}
 
-	if (uniform_buffer_.buffer_) {
-		vkDestroyBuffer(vk_device_, uniform_buffer_.buffer_, nullptr);
-		uniform_buffer_.buffer_ = VK_NULL_HANDLE;
-	}
+		if (buffer.buffer_) {
+			vkDestroyBuffer(vk_device_, buffer.buffer_, nullptr);
+			buffer.buffer_ = VK_NULL_HANDLE;
+		}
 
-	memset(&uniform_buffer_, 0, sizeof(uniform_buffer_));
+		memset(&buffer, 0, sizeof(buffer));
+	};
+
+	DestroyUniformBuffer(uniform_buffer_terrain_);
+	DestroyUniformBuffer(uniform_buffer_mvp_);
 }
 
 // shader storage buffer
-bool MeshShaderDemo::CreateShaderStorageBuffer() {
-	std::vector<glm::vec4> vertex_buffer = {
-		{  1.0f,  1.0f, 0.0f, 1.0f },
-		{ -1.0f,  1.0f, 0.0f, 1.0f },
-		{  0.0f, -1.0f, 0.0f, 1.0f },
-	};
-	uint32_t vertex_buffer_size = static_cast<uint32_t>(vertex_buffer.size()) * sizeof(glm::vec4);
+bool MeshShaderDemo::CreateShaderStorageBuffers() {
+	// -- shader storage buffer of height values --
+
+	terrain_s test_terrain = {};
+	// if sz value changed we need change camera position & value in task shader also
+
+	constexpr int MAX_Z = 32;
+
+	if (!gen_terrain_mid_point(terrain_size_t::TS_128, 0.0f, MAX_Z, test_terrain)) {
+		printf("Could not generate a test terrain\n");
+		return false;
+	}
+
+	// init camera
+
+	float ctr_xy = (test_terrain.vertex_count_per_edge_ - 1) * 0.5f;
+
+	camera_.pos_ = glm::vec3(ctr_xy, ctr_xy, MAX_Z * 2.0f);
+	camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
+
+	view_angles_[ANGLE_YAW] = 0.0f;
+	view_angles_[ANGLE_PITCH] = -45.0f;
+
+	RotateCamera();
+
+	ubo_terrain_s ubo_terrain = {};
+	ubo_terrain.vertex_count_per_edge_ = test_terrain.vertex_count_per_edge_;
+
+	uint32_t height_buffer_size = (uint32_t)(test_terrain.vertex_count_per_edge_ * test_terrain.vertex_count_per_edge_ * 
+		sizeof(float));
 
 	VkBufferCreateInfo create_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		.pNext = nullptr,
 		.flags = 0,
-		.size = vertex_buffer_size,	// tune this
+		.size = height_buffer_size,
 		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.queueFamilyIndexCount = 0,
 		.pQueueFamilyIndices = nullptr
 	};
 
-	if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &shader_storage_buffer_.buffer_)) {
+	if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &shader_storage_buffer_heights_.buffer_)) {
 		return false;
 	}
 
 	VkMemoryRequirements memory_requierments;
-	vkGetBufferMemoryRequirements(vk_device_, shader_storage_buffer_.buffer_, &memory_requierments);
+	vkGetBufferMemoryRequirements(vk_device_, shader_storage_buffer_heights_.buffer_, &memory_requierments);
 
 	VkMemoryAllocateInfo memory_allocate_info = {};
 
@@ -371,67 +461,148 @@ bool MeshShaderDemo::CreateShaderStorageBuffer() {
 	memory_allocate_info.memoryTypeIndex = GetMemoryTypeIndex(memory_requierments.memoryTypeBits,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-	if (VK_SUCCESS != vkAllocateMemory(vk_device_, &memory_allocate_info, nullptr, &shader_storage_buffer_.memory_)) {
+	if (VK_SUCCESS != vkAllocateMemory(vk_device_, &memory_allocate_info, nullptr, &shader_storage_buffer_heights_.memory_)) {
 		printf("vkAllocateMemory error\n");
 		return false;
 	}
 
 	void* data = nullptr;
-	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_.memory_, 0, 
+	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_heights_.memory_, 0,
 		memory_allocate_info.allocationSize, 0 /*flags*/, &data)) {
 		printf("vkMapMemory error\n");
 		return false;
 	}
 
-	memcpy(data, vertex_buffer.data(), vertex_buffer_size);
+	memcpy(data, test_terrain.heights_, height_buffer_size);
 
-	vkUnmapMemory(vk_device_, shader_storage_buffer_.memory_);
+	// now we can free terrain memory
+	free_terrain(test_terrain);
+
+	vkUnmapMemory(vk_device_, shader_storage_buffer_heights_.memory_);
 
 	if (VK_SUCCESS != vkBindBufferMemory(vk_device_, 
-		shader_storage_buffer_.buffer_, shader_storage_buffer_.memory_, 0 /* offset */)) {
+		shader_storage_buffer_heights_.buffer_, shader_storage_buffer_heights_.memory_, 0 /* offset */)) {
 		printf("vkBindBufferMemory error\n");
 		return false;
 	}
 
-	shader_storage_buffer_.buffer_info_.buffer = shader_storage_buffer_.buffer_;
-	shader_storage_buffer_.buffer_info_.offset = 0;
-	shader_storage_buffer_.buffer_info_.range = vertex_buffer_size;
+	shader_storage_buffer_heights_.buffer_info_.buffer = shader_storage_buffer_heights_.buffer_;
+	shader_storage_buffer_heights_.buffer_info_.offset = 0;
+	shader_storage_buffer_heights_.buffer_info_.range = height_buffer_size;
+
+	// update ubo_terrain
+	UpdateUniformBuffer(uniform_buffer_terrain_, (const std::byte*)&ubo_terrain, sizeof(ubo_terrain));
+
+	// -- shader storage buffer of color table --
+	
+	glm::vec4 color_table[MAX_Z + 1];
+
+	rgb_s rgb_start = { 0.0, 0.0, 1.0 };	// blue
+	rgb_s rgb_stop  = { 1.0, 0.0, 0.0 };	// red
+
+	for (int i = 0; i <= MAX_Z; ++i) {
+		double t = i / (float)MAX_Z;
+		rgb_s rgb_int;
+		RGBInterpolate(rgb_start, rgb_stop, t, rgb_int);
+		color_table[i] = glm::vec4((float)rgb_int.r_, (float)rgb_int.g_, (float)rgb_int.b_, 1.0f /* opaque */);
+	}
+
+	create_info.size = (VkDeviceSize)sizeof(color_table);
+
+	if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &shader_storage_buffer_color_table_.buffer_)) {
+		return false;
+	}
+
+	vkGetBufferMemoryRequirements(vk_device_, shader_storage_buffer_color_table_.buffer_, &memory_requierments);
+
+	memory_allocate_info.allocationSize = memory_requierments.size;
+	memory_allocate_info.memoryTypeIndex = GetMemoryTypeIndex(memory_requierments.memoryTypeBits,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+	if (VK_SUCCESS != vkAllocateMemory(vk_device_, &memory_allocate_info, nullptr, &shader_storage_buffer_color_table_.memory_)) {
+		printf("vkAllocateMemory error\n");
+		return false;
+	}
+
+	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_color_table_.memory_, 0,
+		memory_allocate_info.allocationSize, 0 /*flags*/, &data)) {
+		printf("vkMapMemory error\n");
+		return false;
+	}
+
+	memcpy(data, color_table, sizeof(color_table));
+
+	vkUnmapMemory(vk_device_, shader_storage_buffer_color_table_.memory_);
+
+	if (VK_SUCCESS != vkBindBufferMemory(vk_device_,
+		shader_storage_buffer_color_table_.buffer_, shader_storage_buffer_color_table_.memory_, 0 /* offset */)) {
+		printf("vkBindBufferMemory error\n");
+		return false;
+	}
+
+	shader_storage_buffer_color_table_.buffer_info_.buffer = shader_storage_buffer_color_table_.buffer_;
+	shader_storage_buffer_color_table_.buffer_info_.offset = 0;
+	shader_storage_buffer_color_table_.buffer_info_.range = (VkDeviceSize)sizeof(color_table);
 
 	return true;
 }
 
-void MeshShaderDemo::DestroyShaderStorageBuffer() {
-	if (shader_storage_buffer_.memory_) {
-		vkFreeMemory(vk_device_, shader_storage_buffer_.memory_, nullptr);
-		shader_storage_buffer_.memory_ = VK_NULL_HANDLE;
+void MeshShaderDemo::DestroyShaderStorageBuffers() {
+	// color table
+	if (shader_storage_buffer_color_table_.memory_) {
+		vkFreeMemory(vk_device_, shader_storage_buffer_color_table_.memory_, nullptr);
+		shader_storage_buffer_color_table_.memory_ = VK_NULL_HANDLE;
 	}
 
-	if (shader_storage_buffer_.buffer_) {
-		vkDestroyBuffer(vk_device_, shader_storage_buffer_.buffer_, nullptr);
-		shader_storage_buffer_.buffer_ = VK_NULL_HANDLE;
+	if (shader_storage_buffer_color_table_.buffer_) {
+		vkDestroyBuffer(vk_device_, shader_storage_buffer_color_table_.buffer_, nullptr);
+		shader_storage_buffer_color_table_.buffer_ = VK_NULL_HANDLE;
 	}
 
-	memset(&shader_storage_buffer_, 0, sizeof(shader_storage_buffer_));
+	memset(&shader_storage_buffer_color_table_, 0, sizeof(shader_storage_buffer_color_table_));
+
+	// height values
+	if (shader_storage_buffer_heights_.memory_) {
+		vkFreeMemory(vk_device_, shader_storage_buffer_heights_.memory_, nullptr);
+		shader_storage_buffer_heights_.memory_ = VK_NULL_HANDLE;
+	}
+
+	if (shader_storage_buffer_heights_.buffer_) {
+		vkDestroyBuffer(vk_device_, shader_storage_buffer_heights_.buffer_, nullptr);
+		shader_storage_buffer_heights_.buffer_ = VK_NULL_HANDLE;
+	}
+
+	memset(&shader_storage_buffer_heights_, 0, sizeof(shader_storage_buffer_heights_));
 }
 
 // descriptor set pool
 bool MeshShaderDemo::CreateDescriptorPool() {
 	VkDescriptorPoolCreateInfo create_info = {};
 
-	VkDescriptorPoolSize pool_size_array[2];
+	std::array<VkDescriptorPoolSize, 4> pool_size_array;
 
-	pool_size_array[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	pool_size_array[0].descriptorCount = 1;
+	int idx = 0;
+	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	pool_size_array[idx].descriptorCount = 1;
 
-	pool_size_array[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	pool_size_array[1].descriptorCount = 1;
+	idx++;
+	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	pool_size_array[idx].descriptorCount = 1;
+
+	idx++;
+	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	pool_size_array[idx].descriptorCount = 1;
+
+	idx++;
+	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	pool_size_array[idx].descriptorCount = 1;
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 	create_info.maxSets = 1;    // is the maximum number of descriptor sets that can be allocated from the pool.
-	create_info.poolSizeCount = 2;
-	create_info.pPoolSizes = pool_size_array;
+	create_info.poolSizeCount = (uint32_t)pool_size_array.size();
+	create_info.pPoolSizes = pool_size_array.data();
 
 	return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool_);
 }
@@ -447,25 +618,41 @@ void MeshShaderDemo::DestroyDescriptorPool() {
 bool MeshShaderDemo::CreateDescriptorSetLayout() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	VkDescriptorSetLayoutBinding binding[2];
+	std::array<VkDescriptorSetLayoutBinding, 4> binding;
 
-	binding[0].binding = 0;
-	binding[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	binding[0].descriptorCount = 1;
-	binding[0].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;    // descriptset can be used in which shaders
-	binding[0].pImmutableSamplers = nullptr;
+	int idx = 0;
+	binding[idx].binding = 0;
+	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	binding[idx].descriptorCount = 1;
+	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;    // descriptset can be used in which shaders
+	binding[idx].pImmutableSamplers = nullptr;
 
-	binding[1].binding = 1;
-	binding[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	binding[1].descriptorCount = 1;
-	binding[1].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
-	binding[1].pImmutableSamplers = nullptr;
+	idx++;
+	binding[idx].binding = 1;
+	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	binding[idx].descriptorCount = 1;
+	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	binding[idx].pImmutableSamplers = nullptr;
+
+	idx++;
+	binding[idx].binding = 2;
+	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	binding[idx].descriptorCount = 1;
+	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	binding[idx].pImmutableSamplers = nullptr;
+
+	idx++;
+	binding[idx].binding = 3;
+	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	binding[idx].descriptorCount = 1;
+	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
+	binding[idx].pImmutableSamplers = nullptr;
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = 2;
-	create_info.pBindings = binding;
+	create_info.bindingCount = (uint32_t)binding.size();
+	create_info.pBindings = binding.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout_);
 }
@@ -491,31 +678,57 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 		return false;
 	}
 
-	VkWriteDescriptorSet write_descriptor_set[2];
+	std::array<VkWriteDescriptorSet, 4> write_descriptor_set;
 
-	write_descriptor_set[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[0].pNext = nullptr;
-	write_descriptor_set[0].dstSet = vk_descriptorset_;
-	write_descriptor_set[0].dstBinding = 0;    // layout (binding = 0) uniform BufferMat 
-	write_descriptor_set[0].dstArrayElement = 0;
-	write_descriptor_set[0].descriptorCount = 1;
-	write_descriptor_set[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-	write_descriptor_set[0].pImageInfo = nullptr;
-	write_descriptor_set[0].pBufferInfo = &uniform_buffer_.buffer_info_;
-	write_descriptor_set[0].pTexelBufferView = nullptr;
+	int idx = 0;
+	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write_descriptor_set[idx].pNext = nullptr;
+	write_descriptor_set[idx].dstSet = vk_descriptorset_;
+	write_descriptor_set[idx].dstBinding = 0;    // layout (binding = 0) uniform BufferMat 
+	write_descriptor_set[idx].dstArrayElement = 0;
+	write_descriptor_set[idx].descriptorCount = 1;
+	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+	write_descriptor_set[idx].pImageInfo = nullptr;
+	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_mvp_.buffer_info_;
+	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
-	write_descriptor_set[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[1].pNext = nullptr;
-	write_descriptor_set[1].dstSet = vk_descriptorset_;
-	write_descriptor_set[1].dstBinding = 1;		// layout(std430, binding = 1) buffer Vertices
-	write_descriptor_set[1].dstArrayElement = 0;
-	write_descriptor_set[1].descriptorCount = 1;
-	write_descriptor_set[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	write_descriptor_set[1].pImageInfo = nullptr;
-	write_descriptor_set[1].pBufferInfo = &shader_storage_buffer_.buffer_info_;
-	write_descriptor_set[1].pTexelBufferView = nullptr;
+	idx++;
+	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write_descriptor_set[idx].pNext = nullptr;
+	write_descriptor_set[idx].dstSet = vk_descriptorset_;
+	write_descriptor_set[idx].dstBinding = 1;
+	write_descriptor_set[idx].dstArrayElement = 0;
+	write_descriptor_set[idx].descriptorCount = 1;
+	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+	write_descriptor_set[idx].pImageInfo = nullptr;
+	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.buffer_info_;
+	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
-	vkUpdateDescriptorSets(vk_device_, 2, write_descriptor_set, 0, nullptr);
+	idx++;
+	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write_descriptor_set[idx].pNext = nullptr;
+	write_descriptor_set[idx].dstSet = vk_descriptorset_;
+	write_descriptor_set[idx].dstBinding = 2;		// layout(std430, binding = 1) buffer Vertices
+	write_descriptor_set[idx].dstArrayElement = 0;
+	write_descriptor_set[idx].descriptorCount = 1;
+	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	write_descriptor_set[idx].pImageInfo = nullptr;
+	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_heights_.buffer_info_;
+	write_descriptor_set[idx].pTexelBufferView = nullptr;
+
+	idx++;
+	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write_descriptor_set[idx].pNext = nullptr;
+	write_descriptor_set[idx].dstSet = vk_descriptorset_;
+	write_descriptor_set[idx].dstBinding = 3;
+	write_descriptor_set[idx].dstArrayElement = 0;
+	write_descriptor_set[idx].descriptorCount = 1;
+	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	write_descriptor_set[idx].pImageInfo = nullptr;
+	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_color_table_.buffer_info_;
+	write_descriptor_set[idx].pTexelBufferView = nullptr;
+
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_set.size(), write_descriptor_set.data(), 0, nullptr);
 
 	return true;
 }
@@ -527,6 +740,105 @@ void MeshShaderDemo::FreeDemoDescriptorSet() {
 			1,
 			&vk_descriptorset_);
 		vk_descriptorset_ = VK_NULL_HANDLE;
+	}
+}
+
+// descriptor set pool2
+bool MeshShaderDemo::CreateDescriptorPool2() {
+	VkDescriptorPoolCreateInfo create_info = {};
+
+	std::array<VkDescriptorPoolSize, 1> pool_size_array;
+
+	int idx = 0;
+	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	pool_size_array[idx].descriptorCount = 1;
+
+	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	create_info.pNext = nullptr;
+	create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	create_info.maxSets = 1;    // is the maximum number of descriptor sets that can be allocated from the pool.
+	create_info.poolSizeCount = (uint32_t)pool_size_array.size();
+	create_info.pPoolSizes = pool_size_array.data();
+
+	return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool2_);
+}
+
+void MeshShaderDemo::DestroyDescriptorPool2() {
+	if (vk_descriptor_pool2_) {
+		vkDestroyDescriptorPool(vk_device_, vk_descriptor_pool2_, nullptr);
+		vk_descriptor_pool2_ = VK_NULL_HANDLE;
+	}
+}
+
+// descriptor set layout2
+bool MeshShaderDemo::CreateDescriptorSetLayout2() {
+	VkDescriptorSetLayoutCreateInfo create_info = {};
+
+	std::array<VkDescriptorSetLayoutBinding, 1> binding;
+
+	int idx = 0;
+	binding[idx].binding = 0;
+	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	binding[idx].descriptorCount = 1;
+	binding[idx].stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT;    // descriptset can be used in which shaders
+	binding[idx].pImmutableSamplers = nullptr;
+
+	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	create_info.pNext = nullptr;
+	create_info.flags = 0;
+	create_info.bindingCount = (uint32_t)binding.size();
+	create_info.pBindings = binding.data();
+
+	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout2_);
+}
+
+void MeshShaderDemo::DestroyDescriptorSetLayout2() {
+	if (vk_descriptorset_layout2_) {
+		vkDestroyDescriptorSetLayout(vk_device_, vk_descriptorset_layout2_, nullptr);
+		vk_descriptorset_layout2_ = VK_NULL_HANDLE;
+	}
+}
+
+// descriptor set2
+bool MeshShaderDemo::AllocDemoDescriptorSet2() {
+	VkDescriptorSetAllocateInfo allocate_info = {};
+
+	allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocate_info.pNext = nullptr;
+	allocate_info.descriptorPool = vk_descriptor_pool2_;
+	allocate_info.descriptorSetCount = 1;
+	allocate_info.pSetLayouts = &vk_descriptorset_layout2_;
+
+	if (VK_SUCCESS != vkAllocateDescriptorSets(vk_device_, &allocate_info, &vk_descriptorset2_)) {
+		return false;
+	}
+
+	std::array<VkWriteDescriptorSet, 1> write_descriptor_set;
+
+	int idx = 0;
+	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write_descriptor_set[idx].pNext = nullptr;
+	write_descriptor_set[idx].dstSet = vk_descriptorset2_;
+	write_descriptor_set[idx].dstBinding = 0;
+	write_descriptor_set[idx].dstArrayElement = 0;
+	write_descriptor_set[idx].descriptorCount = 1;
+	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+	write_descriptor_set[idx].pImageInfo = nullptr;
+	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.buffer_info_;
+	write_descriptor_set[idx].pTexelBufferView = nullptr;
+
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_set.size(), write_descriptor_set.data(), 0, nullptr);
+
+	return true;
+}
+
+void MeshShaderDemo::FreeDemoDescriptorSet2() {
+	if (vk_descriptorset2_) {
+		vkFreeDescriptorSets(vk_device_,
+			vk_descriptor_pool2_,
+			1,
+			&vk_descriptorset2_);
+		vk_descriptorset2_ = VK_NULL_HANDLE;
 	}
 }
 
@@ -553,11 +865,15 @@ void MeshShaderDemo::DestroyPipelineCache() {
 bool MeshShaderDemo::CreatePipelineLayout() {
 	VkPipelineLayoutCreateInfo create_info = {};
 
+	VkDescriptorSetLayout descriptorset_layouts[2] = {
+		vk_descriptorset_layout_, vk_descriptorset_layout2_
+	};
+
 	create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.setLayoutCount = 1; // use one descriptorset layout
-	create_info.pSetLayouts = &vk_descriptorset_layout_;
+	create_info.setLayoutCount = 2; // use two descriptorset layout
+	create_info.pSetLayouts = descriptorset_layouts;
 	create_info.pushConstantRangeCount = 0;
 	create_info.pPushConstantRanges = nullptr;
 
@@ -572,7 +888,7 @@ void MeshShaderDemo::DestroyPipelineLayout() {
 }
 
 // pipeline
-bool MeshShaderDemo::CreatePipeline() {
+bool MeshShaderDemo::CreatePipelines() {
 	VkShaderModule task_shader = VK_NULL_HANDLE, mesh_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
 
 	LoadShader("SPIR-V/base.task.spv", task_shader);
@@ -659,7 +975,7 @@ bool MeshShaderDemo::CreatePipeline() {
 		.flags = 0,
 		.depthClampEnable = VK_FALSE,
 		.rasterizerDiscardEnable = VK_FALSE,
-		.polygonMode = VK_POLYGON_MODE_FILL,    // fill mode
+		.polygonMode = VK_POLYGON_MODE_LINE,
 		.cullMode = VK_CULL_MODE_NONE,
 		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,   // VK_FRONT_FACE_CLOCKWISE  VK_FRONT_FACE_COUNTER_CLOCKWISE
 		.depthBiasEnable = VK_FALSE,
@@ -754,26 +1070,35 @@ bool MeshShaderDemo::CreatePipeline() {
 	create_info.basePipelineHandle = VK_NULL_HANDLE;
 	create_info.basePipelineIndex = 0;
 
-	VkResult rt = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
-		1, &create_info, nullptr, &vk_pipeline_);
+	VkResult rt1 = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
+		1, &create_info, nullptr, &vk_pipeline_wireframe_);
+
+	rasterization_state.polygonMode = VK_POLYGON_MODE_FILL;
+	VkResult rt2 = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
+		1, &create_info, nullptr, &vk_pipeline_fill_);
 
 	// free shader modules
 	vkDestroyShaderModule(vk_device_, fragment_shader, nullptr);
 	vkDestroyShaderModule(vk_device_, mesh_shader, nullptr);
 	vkDestroyShaderModule(vk_device_, task_shader, nullptr);
 
-	return rt == VK_SUCCESS;
+	return rt1 == VK_SUCCESS && rt2 == VK_SUCCESS;
 }
 
-void MeshShaderDemo::DestroyPipeline() {
-	if (vk_pipeline_) {
-		vkDestroyPipeline(vk_device_, vk_pipeline_, nullptr);
-		vk_pipeline_ = VK_NULL_HANDLE;
+void MeshShaderDemo::DestroyPipelines() {
+	if (vk_pipeline_fill_) {
+		vkDestroyPipeline(vk_device_, vk_pipeline_fill_, nullptr);
+		vk_pipeline_fill_ = VK_NULL_HANDLE;
+	}
+
+	if (vk_pipeline_wireframe_) {
+		vkDestroyPipeline(vk_device_, vk_pipeline_wireframe_, nullptr);
+		vk_pipeline_wireframe_ = VK_NULL_HANDLE;
 	}
 }
 
 // build command buffer
-void MeshShaderDemo::BuildCommandBuffer() {
+void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 	VkCommandBufferBeginInfo cmd_buf_begin_info = {};
 
 	cmd_buf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -796,7 +1121,7 @@ void MeshShaderDemo::BuildCommandBuffer() {
 	render_pass_begin_info.pNext = nullptr;
 
 	render_pass_begin_info.renderPass = vk_render_pass_;
-	//render_pass_begin_info.framebuffer
+	// render_pass_begin_info.framebuffer
 	render_pass_begin_info.renderArea.offset.x = 0;
 	render_pass_begin_info.renderArea.offset.y = 0;
 	render_pass_begin_info.renderArea.extent.width = cfg_viewport_cx_;
@@ -833,10 +1158,12 @@ void MeshShaderDemo::BuildCommandBuffer() {
 
 		vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
-		vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			vk_pipeline_layout_, 0, 1, &vk_descriptorset_, 0, nullptr);
+		VkDescriptorSet descriptor_sets[2] = { vk_descriptorset_, vk_descriptorset2_ };
 
-		vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_);
+		vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			vk_pipeline_layout_, 0, 2, descriptor_sets, 0, nullptr);
+
+		vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 		// draw
 		vkCmdDrawMeshTasksEXT(cmd_buf, 1, 1, 1);
@@ -850,41 +1177,47 @@ void MeshShaderDemo::BuildCommandBuffer() {
 	}
 }
 
-void MeshShaderDemo::UpdateUniformBuffers() {
-	ubo_s ubo;
+void MeshShaderDemo::UpdateMVPUniformBuffer() {
+	ubo_mvp_s ubo_mvp;
 
-	glm::mat4 projection_matrix = glm::perspective(glm::radians(60.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 0.1f, 256.0f);
+	glm::mat4 projection_matrix = glm::perspective(glm::radians(70.0f),
+		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 4.0f, 4096.0f);
 
-	/*
-		   y
-		   |
-		   |
-		   |______x
-		  /
-		 /
-		z
-
-	*/
-
-	glm::mat4 view_matrix = glm::lookAt(glm::vec3(0.0f, 0.0f, 2.5f),
-		glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	glm::mat4 view_matrix;
+	GetViewMatrix(view_matrix);
 
 	glm::mat4 model_matrix = glm::mat4(1.0f);
 
-	ubo.model_view_proj_mat_ = projection_matrix * view_matrix * model_matrix;
+	ubo_mvp.model_view_proj_mat_ = projection_matrix * view_matrix * model_matrix;
 
+	UpdateUniformBuffer(uniform_buffer_mvp_, (const std::byte*)& ubo_mvp, sizeof(ubo_mvp));
+}
 
+void MeshShaderDemo::UpdateUniformBuffer(buffer_s& buffer, const std::byte* host_data, size_t host_data_size) {
 	void* data = nullptr;
-	VkResult rt = vkMapMemory(vk_device_, uniform_buffer_.memory_, 0, sizeof(ubo), 0, &data);
+	VkResult rt = vkMapMemory(vk_device_, buffer.memory_, 0, (VkDeviceSize)host_data_size, 0, &data);
 	if (rt != VK_SUCCESS) {
-		printf("[UpdateUniformBuffers] vkMapMemory error\n");
+		printf("[UpdateMVPUniformBuffer] vkMapMemory error\n");
 		return;
 	}
 
-	memcpy(data, &ubo, sizeof(ubo));
+	memcpy(data, host_data, host_data_size);
 
-	vkUnmapMemory(vk_device_, uniform_buffer_.memory_);
+	// flush to make change visible to device
+	VkMappedMemoryRange mapped_range = {};
+
+	mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+	mapped_range.pNext = nullptr;
+	mapped_range.memory = buffer.memory_;
+	mapped_range.offset = buffer.buffer_info_.offset;
+	mapped_range.size = buffer.buffer_info_.range;
+
+	rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
+	if (rt != VK_SUCCESS) {
+		printf("[UpdateMVPUniformBuffer] vkFlushMappedMemoryRanges error\n");
+	}
+
+	vkUnmapMemory(vk_device_, buffer.memory_);
 }
 
 /*

@@ -128,14 +128,44 @@ protected:
 
     bool                    enable_display_;
 
-    virtual void            AddAdditionalInstanceExtensions(std::vector<const char*> & extensions);
-    virtual void            AddAdditionalDeviceExtensions(std::vector<const char*>& extensions);
+    virtual void            AddAdditionalInstanceExtensions(std::vector<const char*> & extensions) const;
+    virtual void            AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const;
 
     // helper
     uint32_t                GetMemoryTypeIndex(uint32_t memory_type_bits, VkMemoryPropertyFlags required_memory_properties);
     bool                    LoadShader(const char* filename, VkShaderModule& shader_module);
+    void                    GetViewMatrix(glm::mat4 & view_mat) const;
+
+protected:
+
+    struct camera_s {
+        glm::vec3           pos_;
+        glm::vec3           target_;
+        glm::vec3           up_;
+    } camera_;
+
+    struct movement_s {
+        int                 forward_;   // 0: stopped, 1: forward, -1: backward
+        int                 right_;     // 0: stopped, 1: right, -1: left
+    } movement_;
+
+    static const int        ANGLE_YAW = 0;
+    static const int        ANGLE_PITCH = 1;
+    // TODO: support ROLL
+
+    float                   view_angles_[2];    // measured in degree
+
+    void                    RotateCamera();
+
+    virtual void            KeyF2Down();
 
 private:
+
+    bool                    left_button_down_;
+    int                     cursor_x_;
+    int                     cursor_y_;
+    float                   mouse_sensitive_;
+    float                   move_speed_;
 
     bool                    CreateDemoWindow();
 
@@ -201,4 +231,6 @@ private:
     // command buffers
     bool                    AllocCommandBuffers();
     void                    FreeCommandBuffers();
+
+    void                    CheckMovement();
 };

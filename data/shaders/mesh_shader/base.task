@@ -1,6 +1,12 @@
 #version 450
 #extension GL_EXT_mesh_shader : require
 
+// set = 1: descriptset 1
+layout (set = 1, binding = 0) uniform Terrain {
+    int vertex_count_per_edge;
+} terrain;
+
 void main() {
-	EmitMeshTasksEXT(1, 1, 1);
+	EmitMeshTasksEXT(terrain.vertex_count_per_edge - 1 /* groupCountX */, 
+	                 terrain.vertex_count_per_edge - 1 /* groupCountY */, 1 /* groupCountZ */);
 }

@@ -521,3 +521,129 @@ COMMON_API int Str_UTF32ToUTF8(const char32_t* utf32, char* utf8, int utf8_bytes
 # error "unsupported platform"
 #endif
 }
+
+// color
+
+COMMON_API void	RGB2HSV(const rgb_s& in, hsv_s& out) {
+	double min, max, delta;
+
+	min = in.r_ < in.g_ ? in.r_ : in.g_;
+	min = min < in.b_ ? min : in.b_;
+
+	max = in.r_ > in.g_ ? in.r_ : in.g_;
+	max = max > in.b_ ? max : in.b_;
+
+	// v
+	out.v_ = max;	
+
+	// s
+	delta = max - min;
+	if (max > 0.0) { // NOTE: if max == 0, this divide would cause a crash
+		out.s_ = (delta / max);
+	}
+	else {
+		// if max is 0, then r = g = b = 0              
+		// s = 0, v is undefined
+		out.s_ = 0.0;
+		out.h_ = 1e30f;
+		return;
+	}
+
+	// h
+	if (in.r_ >= max) {							// > is bogus, just keeps compilor happy
+		out.h_ = (in.g_ - in.b_) / delta;		// between yellow & magenta
+	}
+	else if (in.g_ >= max) {
+		out.h_ = 2.0 + (in.b_ - in.r_) / delta;	// between cyan & yellow
+	}
+	else {
+		out.h_ = 4.0 + (in.r_ - in.g_) / delta;	// between magenta & cyan
+	}
+
+	out.h_ *= 60.0;	// degrees
+
+	if (out.h_ < 0.0) {
+		out.h_ += 360.0;
+	}
+}
+
+COMMON_API void	HSV2RGB(const hsv_s& in, rgb_s& out) {
+	double	hh, p, q, t, ff;
+	long	i;
+
+	if (in.s_ <= 0.0) {       // < is bogus, just shuts up warnings
+		out.r_ = in.v_;
+		out.g_ = in.v_;
+		out.b_ = in.v_;
+		return;
+	}
+
+	hh = in.h_;
+
+	if (hh >= 360.0) {
+		hh = 0.0;
+	}
+	hh /= 60.0;
+	i = (long)hh;
+	ff = hh - i;
+	p = in.v_ * (1.0 - in.s_);
+	q = in.v_ * (1.0 - (in.s_ * ff));
+	t = in.v_ * (1.0 - (in.s_ * (1.0 - ff)));
+
+	switch (i) {
+	case 0:
+		out.r_ = in.v_;
+		out.g_ = t;
+		out.b_ = p;
+		break;
+	case 1:
+		out.r_ = q;
+		out.g_ = in.v_;
+		out.b_ = p;
+		break;
+	case 2:
+		out.r_ = p;
+		out.g_ = in.v_;
+		out.b_ = t;
+		break;
+	case 3:
+		out.r_ = p;
+		out.g_ = q;
+		out.b_ = in.v_;
+		break;
+	case 4:
+		out.r_ = t;
+		out.g_ = p;
+		out.b_ = in.v_;
+		break;
+	case 5:
+	default:
+		out.r_ = in.v_;
+		out.g_ = p;
+		out.b_ = q;
+		break;
+	}
+}
+
+COMMON_API void RGBInterpolate(const rgb_s& start, const rgb_s& stop, double t, rgb_s& out) {
+	hsv_s hsv_start, hsv_stop, hsv_int;
+
+	// convert to hsv format
+	RGB2HSV(start, hsv_start);
+	RGB2HSV(stop, hsv_stop);
+
+	// clamp
+	if (t < 0.0) {
+		t = 0.0;
+	}
+
+	if (t > 1.0) {
+		t = 1.0;
+	}
+
+	hsv_int.h_ = hsv_start.h_ + (hsv_stop.h_ - hsv_start.h_) * t;
+	hsv_int.s_ = hsv_start.s_ + (hsv_stop.s_ - hsv_start.s_) * t;
+	hsv_int.v_ = hsv_start.v_ + (hsv_stop.v_ - hsv_start.v_) * t;
+
+	HSV2RGB(hsv_int, out);
+}

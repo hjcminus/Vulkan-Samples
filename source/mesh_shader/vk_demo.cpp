@@ -6,6 +6,7 @@
 #include "../common/funcs.h"
 
 #if defined(_WIN32)
+# include <windowsx.h>
 # pragma comment(lib, "vulkan-1.lib")
 #endif
 
@@ -45,7 +46,12 @@ VkDemo::VkDemo():
 	vk_swapchain_color_format_(VK_FORMAT_UNDEFINED),
     vk_render_pass_(VK_NULL_HANDLE),
 	vk_command_pool_(VK_NULL_HANDLE),
-    enable_display_(false)
+    enable_display_(false),
+    left_button_down_(false),
+    cursor_x_(0),
+    cursor_y_(0),
+    mouse_sensitive_(0.5f),
+    move_speed_(2.0f)
 {
 	shader_dir_[0] = '\0';
 
@@ -55,6 +61,24 @@ VkDemo::VkDemo():
 	memset(&vk_physical_device_features_, 0, sizeof(vk_physical_device_features_));
 
 	memset(&vk_depth_stencil_, 0, sizeof(vk_depth_stencil_));
+
+    // z up
+
+    /*
+     z   y
+     |  /
+     | /
+     |/
+      ------x
+     */
+    camera_.pos_ = glm::vec3(0.0f, 0.0f, 0.0f);
+    camera_.target_ = glm::vec3(0.0f, 1.0f, 0.0f);
+    camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
+
+    memset(&movement_, 0, sizeof(movement_));
+
+    view_angles_[ANGLE_YAW] = 0.0f;
+    view_angles_[ANGLE_PITCH] = 0.0f;
 }
 
 VkDemo::~VkDemo() {
@@ -144,6 +168,9 @@ void VkDemo::Shutdown() {
 
 void VkDemo::MainLoop() {
 #if defined(_WIN32)
+
+    Display();  // first draw
+
     MSG msg = {};
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
@@ -152,11 +179,11 @@ void VkDemo::MainLoop() {
 #endif
 }
 
-void VkDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) {
+void VkDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
     // to override by child class
 }
 
-void VkDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) {
+void VkDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const {
     // to override by child class
 }
 
@@ -205,6 +232,10 @@ bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) {
     return rt == VK_SUCCESS;
 }
 
+void VkDemo::GetViewMatrix(glm::mat4& view_mat) const {
+    view_mat = glm::lookAt(camera_.pos_, camera_.target_, camera_.up_);
+}
+
 bool VkDemo::CreateDemoWindow() {
 #if defined(_WIN32)
     WNDCLASSEX wc = {};
@@ -232,7 +263,7 @@ bool VkDemo::CreateDemoWindow() {
     RECT wnd_rect;
     wnd_rect.left = 0;
     wnd_rect.top = 0;
-    wnd_rect.right = cfg_viewport_cy_;
+    wnd_rect.right = cfg_viewport_cx_;
     wnd_rect.bottom = cfg_viewport_cy_;
 
     AdjustWindowRectEx(&wnd_rect, dwStyle, FALSE /* bMenu */, dwExStyle);
@@ -265,8 +296,47 @@ bool VkDemo::CreateDemoWindow() {
 #endif
 }
 
+void VkDemo::RotateCamera() {
+    // normalize yaw in range [0, 360)
+    while (view_angles_[ANGLE_YAW] >= 360.0f) {
+        view_angles_[ANGLE_YAW] -= 360.0f;
+    }
+
+    while (view_angles_[ANGLE_YAW] < 0.0f) {
+        view_angles_[ANGLE_YAW] += 360.0f;
+    }
+
+    // clamp pitch to avoid gimb lock
+    if (view_angles_[ANGLE_PITCH] > 89.0f) {
+        view_angles_[ANGLE_PITCH] = 89.0f;
+    }
+
+    if (view_angles_[ANGLE_PITCH] < -89.0f) {
+        view_angles_[ANGLE_PITCH] = -89.0f;
+    }
+
+    glm::vec4 forward4 = glm::rotate(glm::mat4(1.0),
+        glm::radians(view_angles_[ANGLE_YAW]), glm::vec3(0.0f, 0.0f, 1.0f)) * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+
+    glm::vec3 right = glm::cross(glm::vec3(forward4), camera_.up_);
+
+    forward4 = glm::rotate(glm::mat4(1.0),
+        glm::radians(view_angles_[ANGLE_PITCH]), right) * forward4;
+
+    camera_.target_ = camera_.pos_ + glm::vec3(forward4);
+}
+
+void VkDemo::KeyF2Down() {
+    // to override
+}
+
 #if defined(_WIN32)
 LRESULT VkDemo::DemoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+# define KEY_W  0x57
+# define KEY_S  0x53
+# define KEY_A  0x41
+# define KEY_D  0x44
+
     PAINTSTRUCT ps;
     HDC hdc;
 
@@ -284,7 +354,83 @@ LRESULT VkDemo::DemoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         break;
     case WM_LBUTTONDOWN:
+        left_button_down_ = true;
+        cursor_x_ = GET_X_LPARAM(lParam);
+        cursor_y_ = GET_Y_LPARAM(lParam);
+        break;
+    case WM_LBUTTONUP:
+        left_button_down_ = false;
+        break;
+    case WM_MOUSEMOVE:
+        if (left_button_down_) {
+            // hold left button to rotate the camera
+
+            int new_cursor_x = GET_X_LPARAM(lParam);
+            int new_cursor_y = GET_Y_LPARAM(lParam);
+
+            int delta_x = new_cursor_x - cursor_x_;
+            int delta_y = -(new_cursor_y - cursor_y_);
+
+            float delta_yaw = (float)delta_x;
+            float delta_pitch = (float)delta_y;
+
+            view_angles_[ANGLE_YAW] += delta_yaw * 0.5f;
+            view_angles_[ANGLE_PITCH] += delta_pitch * 0.5f;
+
+            RotateCamera();
+
+            cursor_x_ = new_cursor_x;
+            cursor_y_ = new_cursor_y;
+
+            // update window
+            InvalidateRect(hWnd, nullptr, FALSE);
+        }
+        break;
+    case WM_KEYDOWN:
+        switch (wParam) {
+        case VK_F2:
+            KeyF2Down();
+            InvalidateRect(hWnd, nullptr, FALSE);
+            break;
+        case KEY_W:
+            movement_.forward_ = 1;
+            break;
+        case KEY_S:
+            movement_.forward_ = -1;
+            break;
+        case KEY_A:
+            movement_.right_ = -1;
+            break;
+        case KEY_D:
+            movement_.right_ = 1;
+            break;
+        }
+        CheckMovement();
         InvalidateRect(hWnd, nullptr, FALSE);
+        break;
+    case WM_KEYUP:
+        switch (wParam) {
+        case KEY_W:
+            if (movement_.forward_ > 0) {
+                movement_.forward_ = 0;
+            }
+            break;
+        case KEY_S:
+            if (movement_.forward_ < 0) {
+                movement_.forward_ = 0;
+            }
+            break;
+        case KEY_A:
+            if (movement_.right_ < 0) {
+                movement_.right_ = 0;
+            }
+            break;
+        case KEY_D:
+            if (movement_.right_ > 0) {
+                movement_.right_ = 0;
+            }
+            break;
+        }
         break;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -468,6 +614,14 @@ bool VkDemo::SelectPhysicalDevice() {
             vkGetPhysicalDeviceProperties2(physical_device, &vk_physical_device_properties2_);
 
             printf("DeviceName = \"%s\"\n", vk_physical_device_properties2_.properties.deviceName);
+            printf("maxTaskWorkGroupCount = [%u,%u,%u]\n", 
+                vk_physical_device_mesh_shader_propertices_.maxTaskWorkGroupCount[0],
+                vk_physical_device_mesh_shader_propertices_.maxTaskWorkGroupCount[1],
+                vk_physical_device_mesh_shader_propertices_.maxTaskWorkGroupCount[2]);
+            printf("maxMeshWorkGroupCount = [%u,%u,%u]\n", 
+                vk_physical_device_mesh_shader_propertices_.maxMeshWorkGroupCount[0],
+                vk_physical_device_mesh_shader_propertices_.maxMeshWorkGroupCount[1],
+                vk_physical_device_mesh_shader_propertices_.maxMeshWorkGroupCount[2]);
             printf("maxMeshOutputVertices = %u\n", vk_physical_device_mesh_shader_propertices_.maxMeshOutputVertices);
             printf("maxMeshOutputPrimitives = %u\n", vk_physical_device_mesh_shader_propertices_.maxMeshOutputPrimitives);
 
@@ -550,7 +704,11 @@ bool VkDemo::CreateDevice() {
     device_create_info.enabledExtensionCount = (uint32_t)device_extensions.size();
     device_create_info.ppEnabledExtensionNames = device_extensions.data();
 
-    device_create_info.pEnabledFeatures = nullptr;
+    // enable wireframe mode
+    VkPhysicalDeviceFeatures enable_features = vk_physical_device_features_;
+    enable_features.fillModeNonSolid = VK_TRUE;
+
+    device_create_info.pEnabledFeatures = &enable_features;
 
     VkResult rt = vkCreateDevice(vk_physical_device_, &device_create_info, nullptr, &vk_device_);
 
@@ -1252,4 +1410,23 @@ void VkDemo::FreeCommandBuffers() {
         vk_draw_cmd_buffers_.clear();
     }
 }
+
+void VkDemo::CheckMovement() {
+    if (movement_.forward_ != 0) {
+        glm::vec3 forward = glm::normalize(camera_.target_ - camera_.pos_);
+        glm::vec3 forward_delta = forward * (move_speed_ * movement_.forward_);
+        camera_.pos_ += forward_delta;
+        camera_.target_ += forward_delta;
+    }
+
+    if (movement_.right_ != 0) {
+        glm::vec3 forward = glm::normalize(camera_.target_ - camera_.pos_);
+        glm::vec3 right = glm::cross(forward, camera_.up_);
+        glm::vec3 right_delta = right * (move_speed_ * movement_.right_);
+        camera_.pos_ += right_delta;
+        camera_.target_ += right_delta;
+    }
+
+}
+
 

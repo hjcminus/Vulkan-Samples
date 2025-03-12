@@ -52,3 +52,22 @@ COMMON_API int		Str_UTF8ToUTF16(const char* utf8, char16_t* utf16, int utf16_cha
 COMMON_API int		Str_UTF8ToUTF32(const char* utf8, char32_t* utf32, int utf32_chars);
 COMMON_API int		Str_UTF16ToUTF8(const char16_t* utf16, char* utf8, int utf8_bytes);
 COMMON_API int		Str_UTF32ToUTF8(const char32_t* utf32, char* utf8, int utf8_bytes);
+
+// color
+struct rgb_s {
+	double			r_;	// [0-1]
+	double			g_;	// [0-1]
+	double			b_;	// [0-1]
+};
+
+struct hsv_s {
+	double			h_;	// Hue: [0-360]
+	double			s_;	// Saturation: [0-1]
+	double			v_;	// Value: [0-1]
+};
+
+COMMON_API void		RGB2HSV(const rgb_s & in, hsv_s & out);
+COMMON_API void		HSV2RGB(const hsv_s & in, rgb_s & out);
+
+// t: [0-1], 0: start, 1 stop
+COMMON_API void		RGBInterpolate(const rgb_s & start, const rgb_s & stop, double t, rgb_s& out);
