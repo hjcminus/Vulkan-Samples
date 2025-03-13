@@ -43,7 +43,7 @@ layout (location = 0) out VertexOutput {
 /*
     The built-in variable gl_LocalInvocationIndex is a compute, task, or mesh
     shader input variable that contains the one-dimensional representation of
-    the gl_LocalInvocationID.  // for this demo, range from 0 to 63 ?
+    the gl_LocalInvocationID.
 
 
     gl_GlobalInvocationID:

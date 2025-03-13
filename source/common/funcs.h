@@ -71,3 +71,21 @@ COMMON_API void		HSV2RGB(const hsv_s & in, rgb_s & out);
 
 // t: [0-1], 0: start, 1 stop
 COMMON_API void		RGBInterpolate(const rgb_s & start, const rgb_s & stop, double t, rgb_s& out);
+
+/*
+================================================================================
+entrance
+================================================================================
+*/
+#define DEMO_MAIN(DEMO_CLASS)		\
+int main(int argc, char** argv) {	\
+	Common_Init();					\
+	DEMO_CLASS demo;				\
+	if (!demo.Init()) {				\
+		demo.Shutdown();			\
+		return 1;					\
+	}								\
+	demo.MainLoop();				\
+	demo.Shutdown();				\
+	return 0;						\
+}

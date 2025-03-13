@@ -2,10 +2,10 @@
  mesh shader
  *****************************************************************************/
 
-#include "vk_demo.h"
 #include "gen_terrain_mid_point.h"
 
 #include "../common/funcs.h"
+#include "../common/vk_demo.h"
 
 /*
 ================================================================================
@@ -26,6 +26,7 @@ private:
 	// uniform buffer & shader storage buffer
 	struct buffer_s {
 		VkDeviceMemory		memory_;
+		VkDeviceSize		memory_size_;
 		VkBuffer			buffer_;
 		VkDescriptorBufferInfo  buffer_info_;
 	};
@@ -332,12 +333,22 @@ void MeshShaderDemo::KeyF2Down() {
 // uniform buffer
 bool MeshShaderDemo::CreateUniformBuffers() {
 
-	auto CreateUniformBuffer = [&](buffer_s & buffer, uint32_t req_size) -> bool {
+	auto CreateUniformBuffer = [&](buffer_s & buffer, VkDeviceSize req_size) -> bool {
+
+		// The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
+		// or offset plus size must equal the size of memory
+		VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
+		VkDeviceSize aligned_req_size = req_size;
+
+		if (aligned_req_size % nonCoherentAtomSize) {
+			aligned_req_size = ((aligned_req_size / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
+		}
+
 		VkBufferCreateInfo create_info = {
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.pNext = nullptr,
 			.flags = 0,
-			.size = (VkDeviceSize)req_size,
+			.size = aligned_req_size,
 			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			.queueFamilyIndexCount = 0,
@@ -364,13 +375,17 @@ bool MeshShaderDemo::CreateUniformBuffers() {
 			return false;
 		}
 
+		buffer.memory_size_ = mem_req.size;
+
 		if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
 			return false;
 		}
 
 		buffer.buffer_info_.buffer = buffer.buffer_;
 		buffer.buffer_info_.offset = 0;
-		buffer.buffer_info_.range = (VkDeviceSize)req_size;
+		buffer.buffer_info_.range = aligned_req_size;
+
+		return true;
 	};
 
 	if (!CreateUniformBuffer(uniform_buffer_mvp_, (uint32_t)sizeof(ubo_mvp_s))) {
@@ -418,7 +433,6 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 	}
 
 	// init camera
-
 	float ctr_xy = (test_terrain.vertex_count_per_edge_ - 1) * 0.5f;
 
 	camera_.pos_ = glm::vec3(ctr_xy, ctr_xy, MAX_Z * 2.0f);
@@ -1130,7 +1144,7 @@ void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 	render_pass_begin_info.clearValueCount = 2; // color, depth-stencil
 	render_pass_begin_info.pClearValues = clear_values;
 
-	uint32_t sz_draw_cmd_buffer = (uint32_t)vk_draw_cmd_buffers_.size();
+	uint32_t sz_draw_cmd_buffer = (uint32_t)vk_draw_cmd_buffer_count_;
 	for (uint32_t i = 0; i < sz_draw_cmd_buffer; ++i) {
 		VkCommandBuffer cmd_buf = vk_draw_cmd_buffers_[i];
 
@@ -1195,7 +1209,7 @@ void MeshShaderDemo::UpdateMVPUniformBuffer() {
 
 void MeshShaderDemo::UpdateUniformBuffer(buffer_s& buffer, const std::byte* host_data, size_t host_data_size) {
 	void* data = nullptr;
-	VkResult rt = vkMapMemory(vk_device_, buffer.memory_, 0, (VkDeviceSize)host_data_size, 0, &data);
+	VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.buffer_info_.offset, buffer.buffer_info_.range, 0, &data);
 	if (rt != VK_SUCCESS) {
 		printf("[UpdateMVPUniformBuffer] vkMapMemory error\n");
 		return;
@@ -1225,20 +1239,4 @@ void MeshShaderDemo::UpdateUniformBuffer(buffer_s& buffer, const std::byte* host
 entrance
 ================================================================================
 */
-#include "../common/funcs.h"
-
-int main(int argc, char ** argv) {
-	Common_Init();
-
-	MeshShaderDemo	demo;
-
-	if (!demo.Init()) {
-		demo.Shutdown();
-		return 1;
-	}
-
-	demo.MainLoop();
-	demo.Shutdown();
-
-	return 0;
-}
+DEMO_MAIN(MeshShaderDemo)

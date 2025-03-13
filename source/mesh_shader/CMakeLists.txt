@@ -11,7 +11,7 @@ target_include_directories(mesh_shader PRIVATE $ENV{VULKAN_SDK}/Include)
 target_include_directories(mesh_shader PRIVATE ${PROJECT_SOURCE_DIR}/third_party/glm-1.0.1)
 target_link_directories(mesh_shader PRIVATE $ENV{VULKAN_SDK}/Lib)
 
-target_link_libraries(mesh_shader PRIVATE common)
+target_link_libraries(mesh_shader PRIVATE common vulkan-1)
 
 if (WIN32)
   # set using UNICODE characterset
