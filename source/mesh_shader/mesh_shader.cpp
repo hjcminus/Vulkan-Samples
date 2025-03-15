@@ -4,8 +4,7 @@
 
 #include "gen_terrain_mid_point.h"
 
-#include "../common/funcs.h"
-#include "../common/vk_demo.h"
+#include "../common/inc.h"
 
 /*
 ================================================================================
@@ -23,14 +22,6 @@ public:
 
 private:
 
-	// uniform buffer & shader storage buffer
-	struct buffer_s {
-		VkDeviceMemory		memory_;
-		VkDeviceSize		memory_size_;
-		VkBuffer			buffer_;
-		VkDescriptorBufferInfo  buffer_info_;
-	};
-
 	struct ubo_mvp_s {
 		glm::mat4			model_view_proj_mat_;
 	};
@@ -47,10 +38,10 @@ private:
 	
 	// descriptor
 	VkDescriptorPool        vk_descriptor_pool_;
+
 	VkDescriptorSetLayout   vk_descriptorset_layout_;
 	VkDescriptorSet         vk_descriptorset_;
 
-	VkDescriptorPool        vk_descriptor_pool2_;
 	VkDescriptorSetLayout   vk_descriptorset_layout2_;
 	VkDescriptorSet         vk_descriptorset2_;
 
@@ -92,10 +83,6 @@ private:
 	bool					AllocDemoDescriptorSet();
 	void					FreeDemoDescriptorSet();
 
-	// descriptor set pool2
-	bool					CreateDescriptorPool2();
-	void					DestroyDescriptorPool2();
-
 	// descriptor set layout2
 	bool					CreateDescriptorSetLayout2();
 	void					DestroyDescriptorSetLayout2();
@@ -130,7 +117,6 @@ MeshShaderDemo::MeshShaderDemo():
 	vk_descriptor_pool_(VK_NULL_HANDLE),
 	vk_descriptorset_layout_(VK_NULL_HANDLE),
 	vk_descriptorset_(VK_NULL_HANDLE),
-	vk_descriptor_pool2_(VK_NULL_HANDLE),
 	vk_descriptorset_layout2_(VK_NULL_HANDLE),
 	vk_descriptorset2_(VK_NULL_HANDLE),
 	vk_pipeline_cache_(VK_NULL_HANDLE),
@@ -196,10 +182,6 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
-	if (!CreateDescriptorPool2()) {
-		return false;
-	}
-
 	if (!CreateDescriptorSetLayout2()) {
 		return false;
 	}
@@ -233,7 +215,6 @@ void MeshShaderDemo::Shutdown() {
 	DestroyPipelineCache();
 	FreeDemoDescriptorSet2();
 	DestroyDescriptorSetLayout2();
-	DestroyDescriptorPool2();
 	FreeDemoDescriptorSet();
 	DestroyDescriptorSetLayout();
 	DestroyDescriptorPool();
@@ -264,7 +245,7 @@ void MeshShaderDemo::Display() {
 	VkFence fence = vk_wait_fences_[current_image_idx];
 
 	vkWaitForFences(vk_device_, 1, &fence, VK_TRUE /* waitAll */, UINT64_MAX /* never timeout */);
-	vkResetFences(vk_device_, 1, &fence);
+	vkResetFences(vk_device_, 1, &fence);	// set the state of current fence to unsignal.
 
 	VkSubmitInfo submit_info = {};
 
@@ -281,6 +262,7 @@ void MeshShaderDemo::Display() {
 	submit_info.pSignalSemaphores = &vk_semaphore_render_complete_;
 
 	// change command buffer state from executable to pending
+	// The fence (optional) will be signaled once all submitted command buffers have completed execution.
 	rt = vkQueueSubmit(vk_graphics_queue_, 1, &submit_info, fence);
 	if (rt != VK_SUCCESS) {
 		printf("vkQueueSubmit error\n");
@@ -332,90 +314,13 @@ void MeshShaderDemo::KeyF2Down() {
 
 // uniform buffer
 bool MeshShaderDemo::CreateUniformBuffers() {
-
-	auto CreateUniformBuffer = [&](buffer_s & buffer, VkDeviceSize req_size) -> bool {
-
-		// The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
-		// or offset plus size must equal the size of memory
-		VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
-		VkDeviceSize aligned_req_size = req_size;
-
-		if (aligned_req_size % nonCoherentAtomSize) {
-			aligned_req_size = ((aligned_req_size / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
-		}
-
-		VkBufferCreateInfo create_info = {
-			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			.pNext = nullptr,
-			.flags = 0,
-			.size = aligned_req_size,
-			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-			.queueFamilyIndexCount = 0,
-			.pQueueFamilyIndices = nullptr  // is a pointer to an array of queue families that will access this buffer.
-			                                // It is ignored if sharingMode is not VK_SHARING_MODE_CONCURRENT.
-		};		
-
-		if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &buffer.buffer_)) {
-			return false;
-		}
-
-		VkMemoryRequirements mem_req = {};
-		vkGetBufferMemoryRequirements(vk_device_, buffer.buffer_, &mem_req);
-
-		VkMemoryAllocateInfo mem_alloc_info = {
-			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-			.pNext = nullptr,
-			.allocationSize = mem_req.size,
-			.memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
-				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-		};
-
-		if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &buffer.memory_)) {
-			return false;
-		}
-
-		buffer.memory_size_ = mem_req.size;
-
-		if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
-			return false;
-		}
-
-		buffer.buffer_info_.buffer = buffer.buffer_;
-		buffer.buffer_info_.offset = 0;
-		buffer.buffer_info_.range = aligned_req_size;
-
-		return true;
-	};
-
-	if (!CreateUniformBuffer(uniform_buffer_mvp_, (uint32_t)sizeof(ubo_mvp_s))) {
-		return false;
-	}
-
-	if (!CreateUniformBuffer(uniform_buffer_terrain_, (uint32_t)sizeof(ubo_terrain_s))) {
-		return false;
-	}
-
-	return true;
+	return CreateBuffer(uniform_buffer_mvp_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_mvp_s)) &&
+		CreateBuffer(uniform_buffer_terrain_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_terrain_s));
 }
 
 void MeshShaderDemo::DestroyUniformBuffers() {
-	auto DestroyUniformBuffer = [&](buffer_s& buffer) {
-		if (buffer.memory_) {
-			vkFreeMemory(vk_device_, buffer.memory_, nullptr);
-			buffer.memory_ = VK_NULL_HANDLE;
-		}
-
-		if (buffer.buffer_) {
-			vkDestroyBuffer(vk_device_, buffer.buffer_, nullptr);
-			buffer.buffer_ = VK_NULL_HANDLE;
-		}
-
-		memset(&buffer, 0, sizeof(buffer));
-	};
-
-	DestroyUniformBuffer(uniform_buffer_terrain_);
-	DestroyUniformBuffer(uniform_buffer_mvp_);
+	DestroyBuffer(uniform_buffer_terrain_);
+	DestroyBuffer(uniform_buffer_mvp_);
 }
 
 // shader storage buffer
@@ -449,40 +354,13 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 	uint32_t height_buffer_size = (uint32_t)(test_terrain.vertex_count_per_edge_ * test_terrain.vertex_count_per_edge_ * 
 		sizeof(float));
 
-	VkBufferCreateInfo create_info = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.size = height_buffer_size,
-		.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.queueFamilyIndexCount = 0,
-		.pQueueFamilyIndices = nullptr
-	};
-
-	if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &shader_storage_buffer_heights_.buffer_)) {
-		return false;
-	}
-
-	VkMemoryRequirements memory_requierments;
-	vkGetBufferMemoryRequirements(vk_device_, shader_storage_buffer_heights_.buffer_, &memory_requierments);
-
-	VkMemoryAllocateInfo memory_allocate_info = {};
-
-	memory_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	memory_allocate_info.pNext = nullptr;
-	memory_allocate_info.allocationSize = memory_requierments.size;
-	memory_allocate_info.memoryTypeIndex = GetMemoryTypeIndex(memory_requierments.memoryTypeBits,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-	if (VK_SUCCESS != vkAllocateMemory(vk_device_, &memory_allocate_info, nullptr, &shader_storage_buffer_heights_.memory_)) {
-		printf("vkAllocateMemory error\n");
+	if (!CreateBuffer(shader_storage_buffer_heights_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, height_buffer_size)) {
 		return false;
 	}
 
 	void* data = nullptr;
 	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_heights_.memory_, 0,
-		memory_allocate_info.allocationSize, 0 /*flags*/, &data)) {
+		shader_storage_buffer_heights_.memory_size_, 0 /*flags*/, &data)) {
 		printf("vkMapMemory error\n");
 		return false;
 	}
@@ -493,16 +371,6 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 	free_terrain(test_terrain);
 
 	vkUnmapMemory(vk_device_, shader_storage_buffer_heights_.memory_);
-
-	if (VK_SUCCESS != vkBindBufferMemory(vk_device_, 
-		shader_storage_buffer_heights_.buffer_, shader_storage_buffer_heights_.memory_, 0 /* offset */)) {
-		printf("vkBindBufferMemory error\n");
-		return false;
-	}
-
-	shader_storage_buffer_heights_.buffer_info_.buffer = shader_storage_buffer_heights_.buffer_;
-	shader_storage_buffer_heights_.buffer_info_.offset = 0;
-	shader_storage_buffer_heights_.buffer_info_.range = height_buffer_size;
 
 	// update ubo_terrain
 	UpdateUniformBuffer(uniform_buffer_terrain_, (const std::byte*)&ubo_terrain, sizeof(ubo_terrain));
@@ -521,25 +389,12 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 		color_table[i] = glm::vec4((float)rgb_int.r_, (float)rgb_int.g_, (float)rgb_int.b_, 1.0f /* opaque */);
 	}
 
-	create_info.size = (VkDeviceSize)sizeof(color_table);
-
-	if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &shader_storage_buffer_color_table_.buffer_)) {
-		return false;
-	}
-
-	vkGetBufferMemoryRequirements(vk_device_, shader_storage_buffer_color_table_.buffer_, &memory_requierments);
-
-	memory_allocate_info.allocationSize = memory_requierments.size;
-	memory_allocate_info.memoryTypeIndex = GetMemoryTypeIndex(memory_requierments.memoryTypeBits,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-	if (VK_SUCCESS != vkAllocateMemory(vk_device_, &memory_allocate_info, nullptr, &shader_storage_buffer_color_table_.memory_)) {
-		printf("vkAllocateMemory error\n");
+	if (!CreateBuffer(shader_storage_buffer_color_table_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sizeof(color_table))) {
 		return false;
 	}
 
 	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_color_table_.memory_, 0,
-		memory_allocate_info.allocationSize, 0 /*flags*/, &data)) {
+		shader_storage_buffer_color_table_.memory_size_, 0 /*flags*/, &data)) {
 		printf("vkMapMemory error\n");
 		return false;
 	}
@@ -548,73 +403,32 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 
 	vkUnmapMemory(vk_device_, shader_storage_buffer_color_table_.memory_);
 
-	if (VK_SUCCESS != vkBindBufferMemory(vk_device_,
-		shader_storage_buffer_color_table_.buffer_, shader_storage_buffer_color_table_.memory_, 0 /* offset */)) {
-		printf("vkBindBufferMemory error\n");
-		return false;
-	}
-
-	shader_storage_buffer_color_table_.buffer_info_.buffer = shader_storage_buffer_color_table_.buffer_;
-	shader_storage_buffer_color_table_.buffer_info_.offset = 0;
-	shader_storage_buffer_color_table_.buffer_info_.range = (VkDeviceSize)sizeof(color_table);
-
 	return true;
 }
 
 void MeshShaderDemo::DestroyShaderStorageBuffers() {
-	// color table
-	if (shader_storage_buffer_color_table_.memory_) {
-		vkFreeMemory(vk_device_, shader_storage_buffer_color_table_.memory_, nullptr);
-		shader_storage_buffer_color_table_.memory_ = VK_NULL_HANDLE;
-	}
-
-	if (shader_storage_buffer_color_table_.buffer_) {
-		vkDestroyBuffer(vk_device_, shader_storage_buffer_color_table_.buffer_, nullptr);
-		shader_storage_buffer_color_table_.buffer_ = VK_NULL_HANDLE;
-	}
-
-	memset(&shader_storage_buffer_color_table_, 0, sizeof(shader_storage_buffer_color_table_));
-
-	// height values
-	if (shader_storage_buffer_heights_.memory_) {
-		vkFreeMemory(vk_device_, shader_storage_buffer_heights_.memory_, nullptr);
-		shader_storage_buffer_heights_.memory_ = VK_NULL_HANDLE;
-	}
-
-	if (shader_storage_buffer_heights_.buffer_) {
-		vkDestroyBuffer(vk_device_, shader_storage_buffer_heights_.buffer_, nullptr);
-		shader_storage_buffer_heights_.buffer_ = VK_NULL_HANDLE;
-	}
-
-	memset(&shader_storage_buffer_heights_, 0, sizeof(shader_storage_buffer_heights_));
+	DestroyBuffer(shader_storage_buffer_color_table_);
+	DestroyBuffer(shader_storage_buffer_heights_);
 }
 
 // descriptor set pool
 bool MeshShaderDemo::CreateDescriptorPool() {
 	VkDescriptorPoolCreateInfo create_info = {};
 
-	std::array<VkDescriptorPoolSize, 4> pool_size_array;
+	std::array<VkDescriptorPoolSize, 2> pool_size_array;
 
 	int idx = 0;
 	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	pool_size_array[idx].descriptorCount = 1;
-
-	idx++;
-	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	pool_size_array[idx].descriptorCount = 1;
+	pool_size_array[idx].descriptorCount = 3;	// three uniform buffers
 
 	idx++;
 	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	pool_size_array[idx].descriptorCount = 1;
-
-	idx++;
-	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	pool_size_array[idx].descriptorCount = 1;
+	pool_size_array[idx].descriptorCount = 2;	// two storage buffers
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	create_info.maxSets = 1;    // is the maximum number of descriptor sets that can be allocated from the pool.
+	create_info.maxSets = 2;    // is the maximum number of descriptor sets that can be allocated from the pool.
 	create_info.poolSizeCount = (uint32_t)pool_size_array.size();
 	create_info.pPoolSizes = pool_size_array.data();
 
@@ -757,33 +571,6 @@ void MeshShaderDemo::FreeDemoDescriptorSet() {
 	}
 }
 
-// descriptor set pool2
-bool MeshShaderDemo::CreateDescriptorPool2() {
-	VkDescriptorPoolCreateInfo create_info = {};
-
-	std::array<VkDescriptorPoolSize, 1> pool_size_array;
-
-	int idx = 0;
-	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	pool_size_array[idx].descriptorCount = 1;
-
-	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	create_info.maxSets = 1;    // is the maximum number of descriptor sets that can be allocated from the pool.
-	create_info.poolSizeCount = (uint32_t)pool_size_array.size();
-	create_info.pPoolSizes = pool_size_array.data();
-
-	return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool2_);
-}
-
-void MeshShaderDemo::DestroyDescriptorPool2() {
-	if (vk_descriptor_pool2_) {
-		vkDestroyDescriptorPool(vk_device_, vk_descriptor_pool2_, nullptr);
-		vk_descriptor_pool2_ = VK_NULL_HANDLE;
-	}
-}
-
 // descriptor set layout2
 bool MeshShaderDemo::CreateDescriptorSetLayout2() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
@@ -819,7 +606,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet2() {
 
 	allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocate_info.pNext = nullptr;
-	allocate_info.descriptorPool = vk_descriptor_pool2_;
+	allocate_info.descriptorPool = vk_descriptor_pool_;
 	allocate_info.descriptorSetCount = 1;
 	allocate_info.pSetLayouts = &vk_descriptorset_layout2_;
 
@@ -849,7 +636,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet2() {
 void MeshShaderDemo::FreeDemoDescriptorSet2() {
 	if (vk_descriptorset2_) {
 		vkFreeDescriptorSets(vk_device_,
-			vk_descriptor_pool2_,
+			vk_descriptor_pool_,
 			1,
 			&vk_descriptorset2_);
 		vk_descriptorset2_ = VK_NULL_HANDLE;

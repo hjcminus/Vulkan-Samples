@@ -2,8 +2,7 @@
  Demo base class - implementation
  *****************************************************************************/
 
-#include "vk_demo.h"
-#include "../common/funcs.h"
+#include "inc.h"
 
 #if defined(_WIN32)
 # include <windowsx.h>
@@ -57,7 +56,8 @@ VkDemo::VkDemo():
     mouse_sensitive_(0.5f),
     move_speed_(2.0f)
 {
-	shader_dir_[0] = '\0';
+	shaders_dir_[0] = '\0';
+    textures_dir_[0] = '\0';
 
 	memset(&vk_physical_device_memory_properties_, 0, sizeof(vk_physical_device_memory_properties_));
 	memset(&vk_physical_device_properties2_, 0, sizeof(vk_physical_device_properties2_));
@@ -90,12 +90,12 @@ VkDemo::~VkDemo() {
 }
 
 bool VkDemo::Init(const char* project_shader_dir) {
-#if defined(_WIN32)
-    const wchar_t* data_folder = GetDataFolder();
-    Str_UTF16ToUTF8((const char16_t*)data_folder, shader_dir_, 1024);
-    strcat_s(shader_dir_, 1024, "/shaders/");
-    strcat_s(shader_dir_, 1024, project_shader_dir);
-#endif
+    // setup folders
+    Str_SPrintf(shaders_dir_, MAX_PATH, "%s/shaders/%s",
+        GetDataFolder(), project_shader_dir);
+    
+    Str_SPrintf(textures_dir_, MAX_PATH, "%s/textures",
+        GetDataFolder());
 
     if (!CreateDemoWindow()) {
         return false;
@@ -213,7 +213,7 @@ bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) {
     shader_module = VK_NULL_HANDLE;
 
     char fullfilename[1024];
-    sprintf_s(fullfilename, "%s/%s", shader_dir_, filename);
+    sprintf_s(fullfilename, "%s/%s", shaders_dir_, filename);
 
     void* code = nullptr;
     int32_t code_len = 0;
@@ -332,6 +332,75 @@ void VkDemo::RotateCamera() {
 
 void VkDemo::KeyF2Down() {
     // to override
+}
+
+// helper
+bool VkDemo::CreateBuffer(buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size) {
+    // The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
+        // or offset plus size must equal the size of memory
+    VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
+    VkDeviceSize aligned_req_size = req_size;
+
+    if (aligned_req_size % nonCoherentAtomSize) {
+        aligned_req_size = ((aligned_req_size / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
+    }
+
+    VkBufferCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = aligned_req_size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr  // is a pointer to an array of queue families that will access this buffer.
+        // It is ignored if sharingMode is not VK_SHARING_MODE_CONCURRENT.
+    };
+
+    if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &buffer.buffer_)) {
+        return false;
+    }
+
+    VkMemoryRequirements mem_req = {};
+    vkGetBufferMemoryRequirements(vk_device_, buffer.buffer_, &mem_req);
+
+    VkMemoryAllocateInfo mem_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+    };
+
+    if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &buffer.memory_)) {
+        return false;
+    }
+
+    buffer.memory_size_ = mem_req.size;
+
+    if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
+        return false;
+    }
+
+    buffer.buffer_info_.buffer = buffer.buffer_;
+    buffer.buffer_info_.offset = 0;
+    buffer.buffer_info_.range = aligned_req_size;
+
+    return true;
+}
+
+void VkDemo::DestroyBuffer(buffer_s& buffer) {
+    if (buffer.memory_) {
+        vkFreeMemory(vk_device_, buffer.memory_, nullptr);
+        buffer.memory_ = VK_NULL_HANDLE;
+    }
+
+    if (buffer.buffer_) {
+        vkDestroyBuffer(vk_device_, buffer.buffer_, nullptr);
+        buffer.buffer_ = VK_NULL_HANDLE;
+    }
+
+    memset(&buffer, 0, sizeof(buffer));
 }
 
 #if defined(_WIN32)
@@ -604,6 +673,8 @@ bool VkDemo::SelectPhysicalDevice() {
         if (support_graphics) {
             vk_physical_device_ = physical_device;
 
+            vkGetPhysicalDeviceFeatures(physical_device, &vk_physical_device_features_);
+
             vkGetPhysicalDeviceMemoryProperties(physical_device, &vk_physical_device_memory_properties_);
 
             // provided by version 1.1
@@ -736,35 +807,32 @@ void VkDemo::DestroyDevice() {
 
 // semaphores used in this demo
 bool VkDemo::CreateDemoSemaphores() {
-    VkSemaphoreCreateInfo semaphore_create_info = {};
+    auto CreateSamaphore = [&](VkSemaphore& sem) -> bool {
 
-    semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    semaphore_create_info.pNext = nullptr;
-    semaphore_create_info.flags = 0;
+        VkSemaphoreCreateInfo semaphore_create_info = {};
 
-    VkResult rt = vkCreateSemaphore(vk_device_, &semaphore_create_info, nullptr, &vk_semaphore_present_complete_);
-    if (rt != VK_SUCCESS) {
-        return false;
-    }
+        semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        semaphore_create_info.pNext = nullptr;
+        semaphore_create_info.flags = 0;
 
-    rt = vkCreateSemaphore(vk_device_, &semaphore_create_info, nullptr, &vk_semaphore_render_complete_);
-    if (rt != VK_SUCCESS) {
-        return false;
-    }
+        return VK_SUCCESS == vkCreateSemaphore(vk_device_, &semaphore_create_info, nullptr, &sem);
+    };
 
-    return true;
+    return CreateSamaphore(vk_semaphore_present_complete_) && CreateSamaphore(vk_semaphore_render_complete_);
 }
 
 void VkDemo::DestroyDemoSemaphores() {
-    if (vk_semaphore_render_complete_) {
-        vkDestroySemaphore(vk_device_, vk_semaphore_render_complete_, nullptr);
-        vk_semaphore_render_complete_ = VK_NULL_HANDLE;
-    }
+    auto DestroySamaphore = [&](VkSemaphore& sem) {
+        
+        if (sem) {
+            vkDestroySemaphore(vk_device_, sem, nullptr);
+            sem = VK_NULL_HANDLE;
+        }
+        
+    };
 
-    if (vk_semaphore_present_complete_) {
-        vkDestroySemaphore(vk_device_, vk_semaphore_present_complete_, nullptr);
-        vk_semaphore_present_complete_ = VK_NULL_HANDLE;
-    }
+    DestroySamaphore(vk_semaphore_render_complete_);
+    DestroySamaphore(vk_semaphore_present_complete_);
 }
 
 // surface
@@ -817,9 +885,6 @@ void VkDemo::DestroySurface() {
 
 // swapchain
 bool VkDemo::CreateSwapChain(bool vsync) {
-    // store old swapchain
-    VkSwapchainKHR old_swapchain = vk_swapchain_;
-
     // -- min image count --
 
     // get phsyical device surface propertices and formats
@@ -1003,22 +1068,14 @@ bool VkDemo::CreateSwapChain(bool vsync) {
 
     // setting clipped to VK_TRUE allows the implementation to discard rendering outsize of the surface area.
     create_info.clipped = VK_TRUE;
-    create_info.oldSwapchain = old_swapchain;
+    create_info.oldSwapchain = vk_swapchain_;
 
-    rt = vkCreateSwapchainKHR(vk_device_, &create_info, nullptr, &vk_swapchain_);
+    VkSwapchainKHR new_swapchain = VK_NULL_HANDLE;
+    rt = vkCreateSwapchainKHR(vk_device_, &create_info, nullptr, &new_swapchain);
     vk_swapchain_color_format_ = image_format;
 
-    if (old_swapchain) {
-        for (int i = 0; i < vk_swapchain_image_count_; ++i) {
-            if (vk_swapchain_images_[i].image_view_) {
-                vkDestroyImageView(vk_device_, vk_swapchain_images_[i].image_view_, nullptr);
-                vk_swapchain_images_[i].image_view_ = VK_NULL_HANDLE;
-            }
-        }
-        vk_swapchain_image_count_ = 0;
-
-        vkDestroySwapchainKHR(vk_device_, old_swapchain, nullptr);
-    }
+    DestroySwapChain();
+    vk_swapchain_ = new_swapchain;
 
     if (rt == VK_SUCCESS) {
         uint32_t swapchain_image_count = 0;
@@ -1226,7 +1283,37 @@ void VkDemo::DestroyDepthStencil() {
 }
 
 // render pass
+//   specifiy framebuffer by command vkCmdBeginRenderPass
 bool VkDemo::CreateRenderPass() {
+    // -- subpass --
+
+    VkSubpassDescription subpass_desciption = {};
+
+    VkAttachmentReference color_attachment_reference = {
+        .attachment = 0,    // first attachment is color image view
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+    };
+
+    VkAttachmentReference depth_attachment_reference = {
+        .attachment = 1,    // second attachment is depth image view
+        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    };
+
+    subpass_desciption.flags = 0;
+    subpass_desciption.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass_desciption.inputAttachmentCount = 0;
+    subpass_desciption.pInputAttachments = nullptr;
+    subpass_desciption.colorAttachmentCount = 1;
+    subpass_desciption.pColorAttachments = &color_attachment_reference;
+    subpass_desciption.pResolveAttachments = nullptr;
+    subpass_desciption.pDepthStencilAttachment = &depth_attachment_reference;
+    subpass_desciption.preserveAttachmentCount = 0;
+    subpass_desciption.pResolveAttachments = nullptr;
+
+    // -- render pass --
+
+    VkRenderPassCreateInfo create_info = {};
+
     std::array<VkAttachmentDescription, 2> attachments = {};
 
     // color
@@ -1264,29 +1351,6 @@ bool VkDemo::CreateRenderPass() {
     // Transition to depth/stencil attachment
     attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    VkSubpassDescription subpass_desciption = {};
-
-    VkAttachmentReference color_attachment_reference = {
-        .attachment = 0,    // first attachment is color image view
-        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-    };
-
-    VkAttachmentReference depth_attachment_reference = {
-        .attachment = 1,    // second attachment is depth image view
-        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    };
-
-    subpass_desciption.flags = 0;
-    subpass_desciption.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass_desciption.inputAttachmentCount = 0;
-    subpass_desciption.pInputAttachments = nullptr;
-    subpass_desciption.colorAttachmentCount = 1;
-    subpass_desciption.pColorAttachments = &color_attachment_reference;
-    subpass_desciption.pResolveAttachments = nullptr;
-    subpass_desciption.pDepthStencilAttachment = &depth_attachment_reference;
-    subpass_desciption.preserveAttachmentCount = 0;
-    subpass_desciption.pResolveAttachments = nullptr;
-
     std::array<VkSubpassDependency, 2> dependencies = {};
 
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -1305,7 +1369,6 @@ bool VkDemo::CreateRenderPass() {
     dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-    VkRenderPassCreateInfo create_info = {};
 
     create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     create_info.pNext = nullptr;

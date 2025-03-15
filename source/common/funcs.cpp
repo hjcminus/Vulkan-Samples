@@ -2,14 +2,9 @@
  helper
  *****************************************************************************/
 
-#include "funcs.h"
+#include "inc.h"
 
-#if defined(PLATFORM_WINDOWS)
-# define WIN32_LEAN_AND_MEAN
-# include <windows.h>
-#endif
-
-static wchar_t	g_data_folder[1024];
+static char	g_data_folder[1024];
 
 static wchar_t * FindDoubleDots(wchar_t* path) {
 	wchar_t* pc = wcsstr(path, L"..\\");
@@ -88,18 +83,27 @@ bool Str_ExtractFileDirSelf(wchar_t * path) {
 
 void Common_Init() {
 #if defined(PLATFORM_WINDOWS)
-	GetModuleFileName(GetModuleHandle(NULL), g_data_folder, 1024);
+	wchar_t buffer[MAX_PATH];
+	GetModuleFileName(GetModuleHandle(NULL), buffer, MAX_PATH);
 
-	Str_ExtractFileDirSelf(g_data_folder);
-	wcscat_s(g_data_folder, L"\\..\\..\\..\\data");
+	Str_ExtractFileDirSelf(buffer);
+	wcscat_s(buffer, L"\\..\\..\\..\\data");
 
-	Str_EraseDoubleDotsInPath(g_data_folder);
+	Str_EraseDoubleDotsInPath(buffer);
+
+	Str_UTF16ToUTF8((const char16_t*)buffer, g_data_folder, MAX_PATH);
 #endif
 }
 
-COMMON_API const wchar_t * GetDataFolder() {
+COMMON_API const char * GetDataFolder() {
 	return g_data_folder;
 }
+
+/*
+================================================================================
+file
+================================================================================
+*/
 
 COMMON_API FILE* File_Open(const char* filename, const char* mod) {
 #if defined(_MSC_VER)
@@ -186,7 +190,38 @@ COMMON_API void File_FreeText(char* data) {
 	}
 }
 
-// string
+/*
+================================================================================
+string
+================================================================================
+*/
+COMMON_API int Str_ICmp(const char* s1, const char* s2) {
+#if defined(_MSC_VER)
+	return _stricmp(s1, s2);
+#endif
+
+#if defined(__GNUC__)
+	return strcasecmp(s1, s2);
+#endif
+}
+
+COMMON_API void Str_VSPrintf(char* dst, int dst_cap, const char* fmt, va_list argptr) {
+#if defined(_MSC_VER)
+	vsnprintf_s(dst, (size_t)dst_cap, _TRUNCATE, fmt, argptr);
+#endif
+
+#if defined(__GNUC__)
+	vsnprintf(dst, dst_cap, fmt, argptr);
+#endif
+}
+
+COMMON_API void Str_SPrintf(char* dst, int dst_cap, const char* fmt, ...) {
+	va_list argptr;
+	va_start(argptr, fmt);
+	Str_VSPrintf(dst, dst_cap, fmt, argptr);
+	va_end(argptr);
+}
+
 COMMON_API int Str_UTF8ToUTF16(const char* utf8, char16_t* utf16, int utf16_chars) {
 #if defined(PLATFORM_WINDOWS)
 	if (!utf8) {
@@ -522,7 +557,11 @@ COMMON_API int Str_UTF32ToUTF8(const char32_t* utf32, char* utf8, int utf8_bytes
 #endif
 }
 
-// color
+/*
+================================================================================
+color
+================================================================================
+*/
 
 COMMON_API void	RGB2HSV(const rgb_s& in, hsv_s& out) {
 	double min, max, delta;
@@ -646,4 +685,374 @@ COMMON_API void RGBInterpolate(const rgb_s& start, const rgb_s& stop, double t, 
 	hsv_int.v_ = hsv_start.v_ + (hsv_stop.v_ - hsv_start.v_) * t;
 
 	HSV2RGB(hsv_int, out);
+}
+
+/*
+================================================================================
+image
+================================================================================
+*/
+
+static bool Image_LoadBMP(const char* filename, image_s& image);
+
+
+COMMON_API bool Img_Load(const char* filename, image_s& image) {
+	const char * ext = strrchr(filename, '.');
+	if (!ext) {
+		printf("Could not get filename extension.\n");
+		return false;
+	}
+
+	if (Str_ICmp(ext + 1, "bmp") == 0) {
+		return Image_LoadBMP(filename, image);
+	}
+	else {
+		printf("Unsupported image file format %s.\n", ext + 1);
+		return false;
+	}
+}
+
+COMMON_API void Img_Free(image_s& image) {
+	if (image.pixels_) {
+		TEMP_FREE(image.pixels_);
+		image.pixels_ = nullptr;
+	}
+
+	image.width_ = image.height_ = 0;
+}
+
+#pragma pack(push, 1)
+
+struct bmpfilehead_s {
+	word_t				bfType_;
+	dword_t				bfSize;
+	word_t				bfReserved1;
+	word_t				bfReserved2;
+	dword_t				bfOffBits;
+};
+
+struct bmpinfohead_s {
+	dword_t				biSize;
+	int					biWidth;
+	int					biHeight;
+	word_t				biPlanes;
+	word_t				biBitCount;
+	dword_t				biCompression;
+	dword_t				biSizeImage;
+	int					biXPelsPerMeter;
+	int					biYPelsPerMeter;
+	dword_t				biClrUsed;
+	dword_t				biClrImportant;
+};
+
+#pragma pack(pop)
+
+#ifndef BI_RGB
+#define BI_RGB			0L
+#endif
+
+#ifndef BI_RLE8
+#define BI_RLE8			1L
+#endif
+
+#ifndef BI_RLE4
+#define BI_RLE4			2L
+#endif
+
+#ifndef BI_BITFIELDS
+#define BI_BITFIELDS	3L
+#endif
+
+#ifndef BI_JPEG
+#define BI_JPEG			4L
+#endif
+
+#ifndef BI_PNG
+#define BI_PNG			5L
+#endif
+
+
+static bool Image_LoadBMP(const char* filename, image_s& image) {
+	memset(&image, 0, sizeof(image));
+
+	void* buffer = nullptr;
+	int32_t file_size = 0;
+	if (!File_LoadBinary32(filename, buffer, file_size)) {
+		printf("Failed to load file \"%s\".\n", filename);
+		return false;
+	}
+
+	bmpfilehead_s* filehead = (bmpfilehead_s*)buffer;
+	bmpinfohead_s* infohead = (bmpinfohead_s*)(filehead + 1);
+
+	if (8 == infohead->biBitCount) {
+		if (BI_RGB == infohead->biCompression) { // uncompressed mode
+			int src_line_len = (infohead->biWidth + 3) & ~3;
+
+			int valid_size = (int)sizeof(bmpfilehead_s) + (int)sizeof(bmpinfohead_s) 
+				           + 4 * 256 + src_line_len * infohead->biHeight;
+			if (valid_size != file_size) {
+				File_FreeBinary(buffer);
+				printf("Bad size\n");
+				return false;
+			}
+
+			image.width_ = infohead->biWidth;
+			image.height_ = infohead->biHeight;
+			image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
+
+			if (!image.pixels_) {
+				File_FreeBinary(buffer);
+				printf("Could not allocate memory for image\n");
+				return false;
+			}
+
+			byte_t* palette = (byte_t*)(infohead + 1);
+			byte_t* src = palette + 4 * 256;
+
+			int dst_line_len = infohead->biWidth * 4;
+
+			for (int h = 0; h < infohead->biHeight; h++) { // OpenGL store bottom row first, same as BMP
+				byte_t* src_line = src + src_line_len * h;
+				byte_t* dst_line = image.pixels_ + dst_line_len * h;
+
+				for (int w = 0; w < infohead->biWidth; w++) {
+					byte_t idx = src_line[w];
+
+					byte_t* src_clr = palette + idx * 4;
+					byte_t* dst_clr = dst_line + w * 4;
+
+					dst_clr[0] = src_clr[2]; // red
+					dst_clr[1] = src_clr[1]; // green
+					dst_clr[2] = src_clr[0]; // blue
+					dst_clr[3] = 255;		 // opaque
+				}
+			}
+		}
+		else if (BI_RLE8 == infohead->biCompression) { 
+			// http://msdn.microsoft.com/en-us/library/windows/desktop/dd183383%28v=vs.85%29.aspx
+			image.width_ = infohead->biWidth;
+			image.height_ = infohead->biHeight;
+			image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
+
+			if (!image.pixels_) {
+				File_FreeBinary(buffer);
+				printf("Could not allocate memory for image\n");
+				return false;
+			}
+
+			// fill to white
+			memset(image.pixels_, 255, infohead->biWidth * 4 * infohead->biHeight);
+
+			byte_t* palette = (byte_t*)(infohead + 1);
+			byte_t* src = palette + 4 * 256;
+
+			int dst_line_len = infohead->biWidth * 4;
+
+			byte_t* s = src;
+
+			int line = 0;
+			int clrxpos = 0;
+			byte_t* dst_line = (byte_t*)image.pixels_;
+
+			bool breakloop = false;
+			while (!breakloop) {
+				byte_t byte1 = s[0];
+				byte_t byte2 = s[1];
+				s += 2;
+
+				if (byte1 > 0) {
+					byte_t runlen = byte1;
+					byte_t clridx = byte2;
+
+					byte_t* src_clr = palette + clridx * 4;
+
+					for (int i = 0; i < (int)runlen; i++) {
+						byte_t* dst_clr = dst_line + clrxpos * 4;
+
+						dst_clr[0] = src_clr[2]; // red
+						dst_clr[1] = src_clr[1]; // green
+						dst_clr[2] = src_clr[0]; // blue
+						dst_clr[3] = 255;		 // opaque
+
+						clrxpos++;
+					}
+				}
+				else { // 0 == byte1
+					if (byte2 >= 0x03) {
+						byte_t clrlen = byte2;
+						for (int i = 0; i < (int)clrlen; i++) {
+							byte_t clridx = s[i];
+
+							byte_t* src_clr = palette + clridx * 4;
+							byte_t* dst_clr = dst_line + clrxpos * 4;
+
+							dst_clr[0] = src_clr[2]; // red
+							dst_clr[1] = src_clr[1]; // green
+							dst_clr[2] = src_clr[0]; // blue
+							dst_clr[3] = 255;		 // opaque
+
+							clrxpos++;
+						}
+						s += clrlen;
+					}
+					else {
+						switch (byte2) {
+						case 0: // end of line
+							line++;
+							dst_line = (byte_t*)image.pixels_ + dst_line_len * line;
+							if (clrxpos != infohead->biWidth) {
+								TEMP_FREE(image.pixels_);
+								image.pixels_ = nullptr;
+								File_FreeBinary(buffer);
+								printf("Bad data\n");
+								return false;
+							}
+							clrxpos = 0;
+							break;
+						case 1: // end of bitmap
+							breakloop = true;
+							break;
+						case 2: // Delta.The 2 bytes following the escape contain unsigned values indicating the horizontal and vertical offsets of the next pixel from the current position.
+							TEMP_FREE(image.pixels_);
+							image.pixels_ = nullptr;
+							File_FreeBinary(buffer);
+							printf("Did not know how to handle delta yet\n");
+							return false;
+						}
+					}
+				}
+			}
+		}
+		else {
+			File_FreeBinary(buffer);
+			printf("Unsupported compression mode %d\n", infohead->biCompression);
+			return false;
+		}
+
+	}
+	else if (16 == infohead->biBitCount) {
+		int src_line_len = (infohead->biWidth * 2 + 3) & ~3;
+
+		int valid_size = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + src_line_len * infohead->biHeight;
+		if (valid_size > file_size) {
+			File_FreeBinary(buffer);
+			printf("Bad size\n");
+			return false;
+		}
+
+		image.width_ = infohead->biWidth;
+		image.height_ = infohead->biHeight;
+		image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
+
+		if (!image.pixels_) {
+			File_FreeBinary(buffer);
+			printf("Could not allocate memory for image\n");
+			return false;
+		}
+
+		byte_t * src = (byte_t*)(infohead + 1);
+
+		int dst_line_len = infohead->biWidth * 4;
+
+		for (int h = 0; h < infohead->biHeight; h++) { // OpenGL store bottom row first, same as BMP
+			byte_t* src_line = src + src_line_len * h;
+			byte_t* dst_line = (byte_t*)image.pixels_ + dst_line_len * h;
+
+			for (int w = 0; w < infohead->biWidth; w++) {
+				uint16_t src_clr = *(uint16_t*)(src_line + w * 2);
+				byte_t * dst_clr = dst_line + w * 4;
+
+				byte_t src_b = (byte_t)(src_clr & 0x001f);
+				byte_t src_g = (byte_t)((src_clr & 0x07e0) >> 5);
+				byte_t src_r = (byte_t)((src_clr & 0xf800) >> 11);
+
+				dst_clr[0] = src_r; // red
+				dst_clr[1] = src_g; // green
+				dst_clr[2] = src_b; // blue
+				dst_clr[3] = 255;   // opaque
+			}
+		}
+	}
+	else if (24 == infohead->biBitCount) {
+		int src_line_len = (infohead->biWidth * 3 + 3) & ~3;
+
+		int valid_size = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + src_line_len * infohead->biHeight;
+		if (valid_size > file_size) {
+			File_FreeBinary(buffer);
+			printf("Bad size\n");
+			return false;
+		}
+
+		image.width_ = infohead->biWidth;
+		image.height_ = infohead->biHeight;
+		image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
+
+		if (!image.pixels_) {
+			File_FreeBinary(buffer);
+			printf("Could not allocate memory for image\n");
+			return false;
+		}
+
+		byte_t * src = (byte_t*)(infohead + 1);
+
+		int dst_line_len = infohead->biWidth * 4;
+
+		for (int h = 0; h < infohead->biHeight; h++) { //OpenGL store bottom row first, same as BMP
+			byte_t* src_line = src + src_line_len * h;
+			byte_t* dst_line = image.pixels_ + dst_line_len * h;
+
+			for (int w = 0; w < infohead->biWidth; w++) {
+				byte_t* src_clr = src_line + w * 3;
+				byte_t* dst_clr = dst_line + w * 4;
+
+				dst_clr[0] = src_clr[2]; // red
+				dst_clr[1] = src_clr[1]; // green
+				dst_clr[2] = src_clr[0]; // blue
+				dst_clr[3] = 255;        //opaque
+			}
+		}
+	}
+	else if (32 == infohead->biBitCount) {
+		int src_line_len = infohead->biWidth * 4;
+
+		int valid_size = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + src_line_len * infohead->biHeight;
+		if (valid_size > file_size) {
+			File_FreeBinary(buffer);
+			printf("Bad size\n");
+			return false;
+		}
+
+		image.width_ = infohead->biWidth;
+		image.height_ = infohead->biHeight;
+		image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
+
+		if (!image.pixels_) {
+			File_FreeBinary(buffer);
+			printf("Could not allocate memory for image\n");
+			return false;
+		}
+
+		byte_t* src = (byte_t*)(infohead + 1);
+
+		int dst_line_len = infohead->biWidth * 4;
+
+		for (int h = 0; h < infohead->biHeight; h++) { //OpenGL store bottom row first, same as BMP
+			byte_t* src_line = src + src_line_len * h;
+			byte_t* dst_line = image.pixels_ + dst_line_len * h;
+
+			for (int w = 0; w < infohead->biWidth; w++) {
+				byte_t* src_clr = src_line + w * 4;
+				byte_t* dst_clr = dst_line + w * 4;
+				dst_clr[0] = src_clr[2]; // red
+				dst_clr[1] = src_clr[1]; // green
+				dst_clr[2] = src_clr[0]; // blue
+				dst_clr[3] = src_clr[3]; // alpha
+			}
+		}
+	}
+
+	File_FreeBinary(buffer);
+
+	return true;
 }

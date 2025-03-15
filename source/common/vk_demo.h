@@ -1,28 +1,8 @@
 /******************************************************************************
  Demo base class
  *****************************************************************************/
- 
-#include "funcs.h"
 
-#if defined(_WIN32)
-# define WIN32_LEAN_AND_MEAN
-# include <windows.h>
-#endif
-
-#include <vector>
-#include <array>
-
-// vulkan
-
-#if defined(_WIN32)
-# define VK_USE_PLATFORM_WIN32_KHR		// to use VK_KHR_WIN32_SURFACE_EXTENSION_NAME
-#endif
-
-#include <vulkan/vulkan.h>
-
-// glm
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
+#pragma once
 
 /*
 ================================================================================
@@ -54,7 +34,9 @@ protected:
 #endif
 
 	// SPIR-V shader file location
-	char					shader_dir_[1024];
+	char					shaders_dir_[MAX_PATH];
+
+    char                    textures_dir_[MAX_PATH];
 
 #ifdef _DEBUG
 	// for validation
@@ -74,6 +56,7 @@ protected:
 	VkPhysicalDeviceProperties2         vk_physical_device_properties2_;
 	VkPhysicalDeviceMeshShaderPropertiesEXT vk_physical_device_mesh_shader_propertices_;
 	VkPhysicalDeviceFeatures			vk_physical_device_features_;
+    // VkPhysicalDeviceFeatures2           vk_physical_device_features2_;
     uint32_t                            vk_physical_device_graphics_queue_family_index_;
 
     VkFormat                vk_depth_format_;
@@ -155,6 +138,14 @@ protected:
         int                 right_;     // 0: stopped, 1: right, -1: left
     } movement_;
 
+    // uniform buffer & shader storage buffer
+    struct buffer_s {
+        VkDeviceMemory		memory_;
+        VkDeviceSize		memory_size_;
+        VkBuffer			buffer_;
+        VkDescriptorBufferInfo  buffer_info_;
+    };
+
     static const int        ANGLE_YAW = 0;
     static const int        ANGLE_PITCH = 1;
     // TODO: support ROLL
@@ -164,6 +155,10 @@ protected:
     void                    RotateCamera();
 
     virtual void            KeyF2Down();
+
+    // helper
+    bool                    CreateBuffer(buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size);
+    void                    DestroyBuffer(buffer_s& buffer);
 
 private:
 
