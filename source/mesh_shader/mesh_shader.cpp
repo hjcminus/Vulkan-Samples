@@ -37,8 +37,6 @@ private:
 	PFN_vkCmdDrawMeshTasksEXT	vkCmdDrawMeshTasksEXT;
 	
 	// descriptor
-	VkDescriptorPool        vk_descriptor_pool_;
-
 	VkDescriptorSetLayout   vk_descriptorset_layout_;
 	VkDescriptorSet         vk_descriptorset_;
 
@@ -46,8 +44,8 @@ private:
 	VkDescriptorSet         vk_descriptorset2_;
 
 	// pipeline
-	VkPipelineCache         vk_pipeline_cache_;
 	VkPipelineLayout        vk_pipeline_layout_;
+
 	VkPipeline              vk_pipeline_wireframe_;
 	VkPipeline				vk_pipeline_fill_;
 
@@ -71,13 +69,8 @@ private:
 	bool					CreateShaderStorageBuffers();
 	void					DestroyShaderStorageBuffers();
 
-	// descriptor set pool
-	bool					CreateDescriptorPool();
-	void					DestroyDescriptorPool();
-
 	// descriptor set layout
 	bool					CreateDescriptorSetLayout();
-	void					DestroyDescriptorSetLayout();
 
 	// descriptor set
 	bool					AllocDemoDescriptorSet();
@@ -85,23 +78,16 @@ private:
 
 	// descriptor set layout2
 	bool					CreateDescriptorSetLayout2();
-	void					DestroyDescriptorSetLayout2();
 
 	// descriptor set2
 	bool					AllocDemoDescriptorSet2();
 	void					FreeDemoDescriptorSet2();
 
-	// pipeline cache
-	bool					CreatePipelineCache();
-	void					DestroyPipelineCache();
-
 	// pipeline layout
 	bool					CreatePipelineLayout();
-	void					DestroyPipelineLayout();
 
 	// pipeline
 	bool					CreatePipelines();
-	void					DestroyPipelines();
 
 	// build command buffer
 	void					BuildCommandBuffer(VkPipeline pipeline);
@@ -114,12 +100,10 @@ private:
 
 MeshShaderDemo::MeshShaderDemo():
 	vkCmdDrawMeshTasksEXT(nullptr),
-	vk_descriptor_pool_(VK_NULL_HANDLE),
 	vk_descriptorset_layout_(VK_NULL_HANDLE),
 	vk_descriptorset_(VK_NULL_HANDLE),
 	vk_descriptorset_layout2_(VK_NULL_HANDLE),
 	vk_descriptorset2_(VK_NULL_HANDLE),
-	vk_pipeline_cache_(VK_NULL_HANDLE),
 	vk_pipeline_layout_(VK_NULL_HANDLE),
 	vk_pipeline_wireframe_(VK_NULL_HANDLE),
 	vk_pipeline_fill_(VK_NULL_HANDLE),
@@ -155,6 +139,10 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
+	if (!CreateDescriptorPools(3, 2, 0, 2)) {
+		return false;
+	}
+
 	// get mesh draw call
 	vkCmdDrawMeshTasksEXT = (PFN_vkCmdDrawMeshTasksEXT)vkGetDeviceProcAddr(vk_device_, "vkCmdDrawMeshTasksEXT");
 	if (!vkCmdDrawMeshTasksEXT) {
@@ -167,10 +155,6 @@ bool MeshShaderDemo::Init() {
 	}
 
 	if (!CreateShaderStorageBuffers()) {
-		return false;
-	}
-
-	if (!CreateDescriptorPool()) {
 		return false;
 	}
 
@@ -190,10 +174,6 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
-	if (!CreatePipelineCache()) {
-		return false;
-	}
-
 	if (!CreatePipelineLayout()) {
 		return false;
 	}
@@ -210,16 +190,16 @@ bool MeshShaderDemo::Init() {
 }
 
 void MeshShaderDemo::Shutdown() {
-	DestroyPipelines();
-	DestroyPipelineLayout();
-	DestroyPipelineCache();
+	DestroyPipeline(vk_pipeline_fill_);
+	DestroyPipeline(vk_pipeline_wireframe_);
+	DestroyPipelineLayout(vk_pipeline_layout_);
 	FreeDemoDescriptorSet2();
-	DestroyDescriptorSetLayout2();
+	DestroyDescriptorSetLayout(vk_descriptorset_layout2_);
 	FreeDemoDescriptorSet();
-	DestroyDescriptorSetLayout();
-	DestroyDescriptorPool();
+	DestroyDescriptorSetLayout(vk_descriptorset_layout_);
 	DestroyShaderStorageBuffers();
 	DestroyUniformBuffers();
+	DestroyDescriptorPools();
 
 	VkDemo::Shutdown();
 }
@@ -411,37 +391,6 @@ void MeshShaderDemo::DestroyShaderStorageBuffers() {
 	DestroyBuffer(shader_storage_buffer_heights_);
 }
 
-// descriptor set pool
-bool MeshShaderDemo::CreateDescriptorPool() {
-	VkDescriptorPoolCreateInfo create_info = {};
-
-	std::array<VkDescriptorPoolSize, 2> pool_size_array;
-
-	int idx = 0;
-	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	pool_size_array[idx].descriptorCount = 3;	// three uniform buffers
-
-	idx++;
-	pool_size_array[idx].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	pool_size_array[idx].descriptorCount = 2;	// two storage buffers
-
-	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	create_info.maxSets = 2;    // is the maximum number of descriptor sets that can be allocated from the pool.
-	create_info.poolSizeCount = (uint32_t)pool_size_array.size();
-	create_info.pPoolSizes = pool_size_array.data();
-
-	return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool_);
-}
-
-void MeshShaderDemo::DestroyDescriptorPool() {
-	if (vk_descriptor_pool_) {
-		vkDestroyDescriptorPool(vk_device_, vk_descriptor_pool_, nullptr);
-		vk_descriptor_pool_ = VK_NULL_HANDLE;
-	}
-}
-
 // descriptor set layout
 bool MeshShaderDemo::CreateDescriptorSetLayout() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
@@ -483,13 +432,6 @@ bool MeshShaderDemo::CreateDescriptorSetLayout() {
 	create_info.pBindings = binding.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout_);
-}
-
-void MeshShaderDemo::DestroyDescriptorSetLayout() {
-	if (vk_descriptorset_layout_) {
-		vkDestroyDescriptorSetLayout(vk_device_, vk_descriptorset_layout_, nullptr);
-		vk_descriptorset_layout_ = VK_NULL_HANDLE;
-	}
 }
 
 // descriptor set
@@ -593,13 +535,6 @@ bool MeshShaderDemo::CreateDescriptorSetLayout2() {
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout2_);
 }
 
-void MeshShaderDemo::DestroyDescriptorSetLayout2() {
-	if (vk_descriptorset_layout2_) {
-		vkDestroyDescriptorSetLayout(vk_device_, vk_descriptorset_layout2_, nullptr);
-		vk_descriptorset_layout2_ = VK_NULL_HANDLE;
-	}
-}
-
 // descriptor set2
 bool MeshShaderDemo::AllocDemoDescriptorSet2() {
 	VkDescriptorSetAllocateInfo allocate_info = {};
@@ -643,25 +578,6 @@ void MeshShaderDemo::FreeDemoDescriptorSet2() {
 	}
 }
 
-bool MeshShaderDemo::CreatePipelineCache() {
-	VkPipelineCacheCreateInfo create_info = {};
-
-	create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = 0;
-	create_info.initialDataSize = 0;
-	create_info.pInitialData = nullptr;
-
-	return VK_SUCCESS == vkCreatePipelineCache(vk_device_, &create_info, nullptr, &vk_pipeline_cache_);
-}
-
-void MeshShaderDemo::DestroyPipelineCache() {
-	if (vk_pipeline_cache_) {
-		vkDestroyPipelineCache(vk_device_, vk_pipeline_cache_, nullptr);
-		vk_pipeline_cache_ = VK_NULL_HANDLE;
-	}
-}
-
 // pipeline layout
 bool MeshShaderDemo::CreatePipelineLayout() {
 	VkPipelineLayoutCreateInfo create_info = {};
@@ -679,13 +595,6 @@ bool MeshShaderDemo::CreatePipelineLayout() {
 	create_info.pPushConstantRanges = nullptr;
 
 	return VK_SUCCESS == vkCreatePipelineLayout(vk_device_, &create_info, nullptr, &vk_pipeline_layout_);
-}
-
-void MeshShaderDemo::DestroyPipelineLayout() {
-	if (vk_pipeline_layout_) {
-		vkDestroyPipelineLayout(vk_device_, vk_pipeline_layout_, nullptr);
-		vk_pipeline_layout_ = VK_NULL_HANDLE;
-	}
 }
 
 // pipeline
@@ -886,18 +795,6 @@ bool MeshShaderDemo::CreatePipelines() {
 	return rt1 == VK_SUCCESS && rt2 == VK_SUCCESS;
 }
 
-void MeshShaderDemo::DestroyPipelines() {
-	if (vk_pipeline_fill_) {
-		vkDestroyPipeline(vk_device_, vk_pipeline_fill_, nullptr);
-		vk_pipeline_fill_ = VK_NULL_HANDLE;
-	}
-
-	if (vk_pipeline_wireframe_) {
-		vkDestroyPipeline(vk_device_, vk_pipeline_wireframe_, nullptr);
-		vk_pipeline_wireframe_ = VK_NULL_HANDLE;
-	}
-}
-
 // build command buffer
 void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 	VkCommandBufferBeginInfo cmd_buf_begin_info = {};
@@ -987,7 +884,8 @@ void MeshShaderDemo::UpdateMVPUniformBuffer() {
 	glm::mat4 view_matrix;
 	GetViewMatrix(view_matrix);
 
-	glm::mat4 model_matrix = glm::mat4(1.0f);
+	glm::mat4 model_matrix;
+	GetModelMatrix(model_matrix);
 
 	ubo_mvp.model_view_proj_mat_ = projection_matrix * view_matrix * model_matrix;
 

@@ -15,6 +15,7 @@ VkDemo
 ================================================================================
 */
 VkDemo::VkDemo():
+    camera_mode_(camera_mode_t::CM_MOVE_CAMERA),
     cfg_viewport_cx_(640),
     cfg_viewport_cy_(480),
 
@@ -47,14 +48,16 @@ VkDemo::VkDemo():
     vk_wait_fence_count_(0),
     vk_framebuffer_count_(0),
     vk_draw_cmd_buffer_count_(0),
+    vk_descriptor_pool_(VK_NULL_HANDLE),
+    vk_pipeline_cache_(VK_NULL_HANDLE),
     vk_render_pass_(VK_NULL_HANDLE),
 	vk_command_pool_(VK_NULL_HANDLE),
     enable_display_(false),
+    move_speed_(2.0f),
     left_button_down_(false),
     cursor_x_(0),
     cursor_y_(0),
-    mouse_sensitive_(0.5f),
-    move_speed_(2.0f)
+    mouse_sensitive_(0.5f)
 {
 	shaders_dir_[0] = '\0';
     textures_dir_[0] = '\0';
@@ -153,10 +156,15 @@ bool VkDemo::Init(const char* project_shader_dir) {
         return false;
     }
 
+    if (!CreatePipelineCache()) {
+        return false;
+    }
+
     return true;
 }
 
 void VkDemo::Shutdown() {
+    DestroyPipelineCache();
     FreeCommandBuffers();
     DestroyCommandPool();
     DestroyFramebuffers();
@@ -189,6 +197,53 @@ void VkDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extension
 
 void VkDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const {
     // to override by child class
+}
+
+// descriptor set pool
+bool VkDemo::CreateDescriptorPools(
+    uint32_t max_uniform_buffer, uint32_t max_storage_buffer, uint32_t max_texture, uint32_t max_desp_set)
+{
+    VkDescriptorPoolCreateInfo create_info = {};
+
+    std::vector<VkDescriptorPoolSize> pool_size_array;
+
+    if (max_uniform_buffer) {
+        pool_size_array.push_back({
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = max_uniform_buffer
+        });
+    }
+
+    if (max_storage_buffer) {
+        pool_size_array.push_back({
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = max_storage_buffer
+            });
+    }
+
+    if (max_texture) {
+        pool_size_array.push_back({
+            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = max_texture
+            });
+    }
+
+    create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    create_info.pNext = nullptr;
+    create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    create_info.maxSets = max_desp_set;    // is the maximum number of descriptor sets that can be allocated from the pool.
+    create_info.poolSizeCount = (uint32_t)pool_size_array.size();
+    create_info.pPoolSizes = pool_size_array.data();
+
+    return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool_);
+
+}
+
+void VkDemo::DestroyDescriptorPools() {
+    if (vk_descriptor_pool_) {
+        vkDestroyDescriptorPool(vk_device_, vk_descriptor_pool_, nullptr);
+        vk_descriptor_pool_ = VK_NULL_HANDLE;
+    }
 }
 
 // helper
@@ -236,8 +291,28 @@ bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) {
     return rt == VK_SUCCESS;
 }
 
+void VkDemo::SetTitle(const char* text) {
+#if defined(_WIN32)
+    char16_t buf[1024];
+    Str_UTF8ToUTF16(text, buf, 1024);
+
+    SetWindowText(hWnd_, (LPCTSTR)buf);
+#endif
+}
+
 void VkDemo::GetViewMatrix(glm::mat4& view_mat) const {
     view_mat = glm::lookAt(camera_.pos_, camera_.target_, camera_.up_);
+}
+
+void VkDemo::GetModelMatrix(glm::mat4& model_mat) const {
+    if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
+        model_mat = glm::mat4(1.0f);
+    }
+    else {
+        model_mat = glm::rotate(glm::mat4(1.0f), 
+            glm::radians(view_angles_[ANGLE_YAW]), 
+            glm::vec3(0.0f, 0.0f, 1.0f));
+    }
 }
 
 bool VkDemo::CreateDemoWindow() {
@@ -301,33 +376,37 @@ bool VkDemo::CreateDemoWindow() {
 }
 
 void VkDemo::RotateCamera() {
-    // normalize yaw in range [0, 360)
-    while (view_angles_[ANGLE_YAW] >= 360.0f) {
-        view_angles_[ANGLE_YAW] -= 360.0f;
+    if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
+
+        // normalize yaw in range [0, 360)
+        while (view_angles_[ANGLE_YAW] >= 360.0f) {
+            view_angles_[ANGLE_YAW] -= 360.0f;
+        }
+
+        while (view_angles_[ANGLE_YAW] < 0.0f) {
+            view_angles_[ANGLE_YAW] += 360.0f;
+        }
+
+        // clamp pitch to avoid gimbal lock
+        if (view_angles_[ANGLE_PITCH] > 89.0f) {
+            view_angles_[ANGLE_PITCH] = 89.0f;
+        }
+
+        if (view_angles_[ANGLE_PITCH] < -89.0f) {
+            view_angles_[ANGLE_PITCH] = -89.0f;
+        }
+
+        glm::vec4 forward4 = glm::rotate(glm::mat4(1.0),
+            glm::radians(view_angles_[ANGLE_YAW]), glm::vec3(0.0f, 0.0f, 1.0f)) * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+
+        glm::vec3 right = glm::cross(glm::vec3(forward4), camera_.up_);
+
+        forward4 = glm::rotate(glm::mat4(1.0),
+            glm::radians(view_angles_[ANGLE_PITCH]), right) * forward4;
+
+        camera_.target_ = camera_.pos_ + glm::vec3(forward4);
+
     }
-
-    while (view_angles_[ANGLE_YAW] < 0.0f) {
-        view_angles_[ANGLE_YAW] += 360.0f;
-    }
-
-    // clamp pitch to avoid gimbal lock
-    if (view_angles_[ANGLE_PITCH] > 89.0f) {
-        view_angles_[ANGLE_PITCH] = 89.0f;
-    }
-
-    if (view_angles_[ANGLE_PITCH] < -89.0f) {
-        view_angles_[ANGLE_PITCH] = -89.0f;
-    }
-
-    glm::vec4 forward4 = glm::rotate(glm::mat4(1.0),
-        glm::radians(view_angles_[ANGLE_YAW]), glm::vec3(0.0f, 0.0f, 1.0f)) * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
-
-    glm::vec3 right = glm::cross(glm::vec3(forward4), camera_.up_);
-
-    forward4 = glm::rotate(glm::mat4(1.0),
-        glm::radians(view_angles_[ANGLE_PITCH]), right) * forward4;
-
-    camera_.target_ = camera_.pos_ + glm::vec3(forward4);
 }
 
 void VkDemo::KeyF2Down() {
@@ -401,6 +480,27 @@ void VkDemo::DestroyBuffer(buffer_s& buffer) {
     }
 
     memset(&buffer, 0, sizeof(buffer));
+}
+
+void VkDemo::DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout) {
+    if (descriptor_set_layout) {
+        vkDestroyDescriptorSetLayout(vk_device_, descriptor_set_layout, nullptr);
+        descriptor_set_layout = VK_NULL_HANDLE;
+    }
+}
+
+void VkDemo::DestroyPipelineLayout(VkPipelineLayout& pipeline_layout) {
+    if (pipeline_layout) {
+        vkDestroyPipelineLayout(vk_device_, pipeline_layout, nullptr);
+        pipeline_layout = VK_NULL_HANDLE;
+    }
+}
+
+void VkDemo::DestroyPipeline(VkPipeline& pipeline) {
+    if (pipeline) {
+        vkDestroyPipeline(vk_device_, pipeline, nullptr);
+        pipeline = VK_NULL_HANDLE;
+    }
 }
 
 #if defined(_WIN32)
@@ -1496,6 +1596,26 @@ void VkDemo::FreeCommandBuffers() {
             (uint32_t)vk_draw_cmd_buffer_count_, vk_draw_cmd_buffers_);
     }
     vk_draw_cmd_buffer_count_ = 0;
+}
+
+// pipeline
+bool VkDemo::CreatePipelineCache() {
+    VkPipelineCacheCreateInfo create_info = {};
+
+    create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    create_info.pNext = nullptr;
+    create_info.flags = 0;
+    create_info.initialDataSize = 0;
+    create_info.pInitialData = nullptr;
+
+    return VK_SUCCESS == vkCreatePipelineCache(vk_device_, &create_info, nullptr, &vk_pipeline_cache_);
+}
+
+void VkDemo::DestroyPipelineCache() {
+    if (vk_pipeline_cache_) {
+        vkDestroyPipelineCache(vk_device_, vk_pipeline_cache_, nullptr);
+        vk_pipeline_cache_ = VK_NULL_HANDLE;
+    }
 }
 
 void VkDemo::CheckMovement() {

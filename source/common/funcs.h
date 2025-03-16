@@ -20,6 +20,8 @@ COMMON_API void			Common_Init();
 
 COMMON_API const char * GetDataFolder();
 
+#define GET_FIELD_OFFSET(s, f) (uint32_t)(&(((s*)0)->f))
+
 /*
 ================================================================================
 file

@@ -24,3 +24,4 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 
 add_subdirectory(source/common)
 add_subdirectory(source/mesh_shader)
+add_subdirectory(source/normal_mapping)

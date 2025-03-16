@@ -22,6 +22,13 @@ public:
 
 protected:
 
+    enum class camera_mode_t {
+        CM_MOVE_CAMERA,
+        CM_ROTATE_OBJECT
+    };
+
+    camera_mode_t           camera_mode_;
+
     // configuration
     uint32_t                cfg_viewport_cx_;
     uint32_t                cfg_viewport_cy_;
@@ -115,15 +122,32 @@ protected:
     VkCommandBuffer         vk_draw_cmd_buffers_[MAX_SWAPCHAIN_IMAGES];
     int                     vk_draw_cmd_buffer_count_;
 
+    // descriptor
+    VkDescriptorPool        vk_descriptor_pool_;
+
+    // pipeline cache
+    VkPipelineCache         vk_pipeline_cache_;
+
     bool                    enable_display_;
 
     virtual void            AddAdditionalInstanceExtensions(std::vector<const char*> & extensions) const;
     virtual void            AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const;
 
+    // descriptor set pool
+    bool					CreateDescriptorPools(
+                                uint32_t max_uniform_buffer, 
+                                uint32_t max_storage_buffer, 
+                                uint32_t max_texture,
+                                uint32_t max_desp_set);
+    void					DestroyDescriptorPools();
+
     // helper
     uint32_t                GetMemoryTypeIndex(uint32_t memory_type_bits, VkMemoryPropertyFlags required_memory_properties);
     bool                    LoadShader(const char* filename, VkShaderModule& shader_module);
+    
+    void                    SetTitle(const char * text);
     void                    GetViewMatrix(glm::mat4 & view_mat) const;
+    void                    GetModelMatrix(glm::mat4& model_mat) const;
 
 protected:
 
@@ -152,6 +176,8 @@ protected:
 
     float                   view_angles_[2];    // measured in degree
 
+    float                   move_speed_;
+
     void                    RotateCamera();
 
     virtual void            KeyF2Down();
@@ -160,13 +186,17 @@ protected:
     bool                    CreateBuffer(buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size);
     void                    DestroyBuffer(buffer_s& buffer);
 
+    void                    DestroyDescriptorSetLayout(VkDescriptorSetLayout & descriptor_set_layout);
+
+    void                    DestroyPipelineLayout(VkPipelineLayout & pipeline_layout);
+    void                    DestroyPipeline(VkPipeline & pipeline);
+
 private:
 
     bool                    left_button_down_;
     int                     cursor_x_;
     int                     cursor_y_;
     float                   mouse_sensitive_;
-    float                   move_speed_;
 
     bool                    CreateDemoWindow();
 
@@ -232,6 +262,10 @@ private:
     // command buffers
     bool                    AllocCommandBuffers();
     void                    FreeCommandBuffers();
+
+    // pipeline
+    bool                    CreatePipelineCache();
+    void                    DestroyPipelineCache();
 
     void                    CheckMovement();
 };
