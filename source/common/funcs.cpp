@@ -4,6 +4,12 @@
 
 #include "inc.h"
 
+/*
+================================================================================
+common
+================================================================================
+*/
+
 static char	g_data_folder[1024];
 
 static wchar_t * FindDoubleDots(wchar_t* path) {
@@ -99,6 +105,21 @@ COMMON_API const char * GetDataFolder() {
 	return g_data_folder;
 }
 
+COMMON_API bool IsBigEndian() {
+	union foo_s {
+		struct {
+			unsigned char b1_;
+			unsigned char b2_;
+		};
+		uint16_t	u16_;
+	} foo;
+
+	foo.b1_ = 1;
+	foo.b2_ = 0;
+
+	return foo.u16_ != 1;
+}
+
 /*
 ================================================================================
 file
@@ -138,6 +159,11 @@ COMMON_API bool File_LoadBinary32(const char* filename, void*& data, int32_t& le
 	fseek(f, 0, SEEK_SET);
 
 	data = TEMP_ALLOC(sz);
+	if (!data) {
+		fclose(f);
+		return false;
+	}
+
 	int read_size = (int)fread(data, 1, sz, f);
 	fclose(f);
 
@@ -157,8 +183,9 @@ COMMON_API void File_FreeBinary(void* data) {
 	}
 }
 
-COMMON_API bool File_LoadText(const char* filename, char*& data) {
+COMMON_API bool File_LoadText(const char* filename, char*& data, int32_t& len) {
 	data = nullptr;
+	len = 0;
 
 	FILE* f = File_Open(filename, "rb");
 
@@ -171,6 +198,11 @@ COMMON_API bool File_LoadText(const char* filename, char*& data) {
 	fseek(f, 0, SEEK_SET);
 
 	data = (char*)TEMP_ALLOC(sz + 1);
+	if (!data) {
+		fclose(f);
+		return false;
+	}
+
 	int read_size = (int)fread(data, 1, sz, f);
 	fclose(f);
 
@@ -180,6 +212,7 @@ COMMON_API bool File_LoadText(const char* filename, char*& data) {
 	}
 	else {
 		data[sz] = 0;
+		len = sz;
 		return true;
 	}
 }
@@ -771,7 +804,6 @@ struct bmpinfohead_s {
 #define BI_PNG			5L
 #endif
 
-
 static bool Image_LoadBMP(const char* filename, image_s& image) {
 	memset(&image, 0, sizeof(image));
 
@@ -1053,6 +1085,123 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 	}
 
 	File_FreeBinary(buffer);
+
+	return true;
+}
+
+/*
+================================================================================
+model
+================================================================================
+*/
+
+static bool Model_LoadPLY(const char* filename, model_s & model);
+
+COMMON_API bool Model_Load(const char* filename, model_s& model) {
+	const char* ext = strrchr(filename, '.');
+	if (!ext) {
+		printf("Could not get filename extension.\n");
+		return false;
+	}
+
+	if (Str_ICmp(ext + 1, "ply") == 0) {
+		return Model_LoadPLY(filename, model);
+	}
+	else {
+		printf("Unsupported model file format %s.\n", ext + 1);
+		return false;
+	}
+}
+
+COMMON_API void Model_Free(model_s& model) {
+	if (model.indices_) {
+		TEMP_FREE(model.indices_);
+		model.indices_ = nullptr;
+	}
+
+	if (model.vertices_pos_normal_) {
+		TEMP_FREE(model.vertices_pos_normal_);
+		model.vertices_pos_normal_ = nullptr;
+	}
+
+	model.num_vertex_ = model.num_triangle_ = 0;
+}
+
+static bool Model_LoadPLY(const char* filename, model_s& model) {
+	memset(&model, 0, sizeof(model));
+
+	PLY ply;
+	if (!ply.Load(filename)) {
+		return false;
+	}
+
+	const glm::vec3* pos_lst = ply.GetPos();
+	const glm::vec3* normal_lst = ply.GetNormal();
+	const glm::vec2* uv_lst = ply.GetNV();
+	const glm::vec4* color_lst = ply.GetColor();
+
+	uint32_t num_vertex = ply.NumberVertex();
+	model.num_vertex_ = num_vertex;
+
+	if (color_lst) {
+		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL;
+
+		vertex_pos_normal_color_s * buf = (vertex_pos_normal_color_s*)TEMP_ALLOC(sizeof(vertex_pos_normal_color_s) * num_vertex);
+		if (!buf) {
+			return false;
+		}
+		
+		model.vertices_pos_normal_color_ = buf;
+
+		for (uint32_t i = 0; i < num_vertex; ++i) {
+			buf[i].pos_ = pos_lst[i];
+			buf[i].normal_ = normal_lst[i];
+			buf[i].color_ = color_lst[i];
+		}
+	}
+	else if (uv_lst) {
+		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL_UV;
+
+		vertex_pos_normal_uv_s * buf = (vertex_pos_normal_uv_s*)TEMP_ALLOC(sizeof(vertex_pos_normal_uv_s) * num_vertex);
+		if (!buf) {
+			return false;
+		}
+
+		model.vertices_pos_normal_uv_ = buf;
+
+		for (uint32_t i = 0; i < num_vertex; ++i) {
+			buf[i].pos_ = pos_lst[i];
+			buf[i].normal_ = normal_lst[i];
+			buf[i].uv_ = uv_lst[i];
+		}
+	}
+	else {
+		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL;
+
+		vertex_pos_normal_s * buf = (vertex_pos_normal_s*)TEMP_ALLOC(sizeof(vertex_pos_normal_s) * num_vertex);
+		if (!buf) {
+			TEMP_FREE(model.vertices_pos_normal_);
+			model.vertices_pos_normal_ = nullptr;
+			return false;
+		}
+
+		model.vertices_pos_normal_ = buf;
+
+		for (uint32_t i = 0; i < num_vertex; ++i) {
+			buf[i].pos_ = pos_lst[i];
+			buf[i].normal_ = normal_lst[i];
+		}
+	}
+
+	uint32_t num_triangle = ply.NumberTriangle();
+	model.num_triangle_ = num_triangle;
+
+	model.indices_ = (uint32_t*)TEMP_ALLOC(sizeof(uint32_t) * num_triangle * 3);
+	if (!model.indices_) {
+		return false;
+	}
+
+	memcpy(model.indices_, ply.GetIndices(), sizeof(uint32_t) * num_triangle * 3);
 
 	return true;
 }

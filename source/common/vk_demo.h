@@ -45,6 +45,8 @@ protected:
 
     char                    textures_dir_[MAX_PATH];
 
+    char                    models_dir_[MAX_PATH];
+
 #ifdef _DEBUG
 	// for validation
 	PFN_vkCreateDebugReportCallbackEXT	vkCreateDebugReportCallbackEXT;
@@ -170,6 +172,13 @@ protected:
         VkDescriptorBufferInfo  buffer_info_;
     };
 
+    struct vk_image_s {
+        VkImage				image_;
+        VkDeviceMemory		memory_;
+        VkDeviceSize		memory_size_;
+        VkImageView			image_view_;
+    };
+
     static const int        ANGLE_YAW = 0;
     static const int        ANGLE_PITCH = 1;
     // TODO: support ROLL
@@ -185,6 +194,14 @@ protected:
     // helper
     bool                    CreateBuffer(buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size);
     void                    DestroyBuffer(buffer_s& buffer);
+
+    bool                    Create2DImage(vk_image_s & vk_image, VkFormat format, VkImageTiling tiling, 
+                                VkImageUsageFlags usage, uint32_t width, uint32_t height,
+                                VkMemoryPropertyFlags memory_property_flags,
+                                VkImageAspectFlags image_aspect_flags);
+    void                    Destroy2DImage(vk_image_s& vk_image);
+
+    bool					Load2DTexture(const char* filename, VkFormat format, VkImageUsageFlags image_usage, vk_image_s & vk_image);
 
     void                    DestroyDescriptorSetLayout(VkDescriptorSetLayout & descriptor_set_layout);
 

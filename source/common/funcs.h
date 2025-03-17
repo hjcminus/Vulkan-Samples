@@ -13,6 +13,12 @@ using byte_t = uint8_t;
 using word_t = uint16_t;
 using dword_t = uint32_t;
 
+/*
+================================================================================
+common
+================================================================================
+*/
+
 #define	TEMP_ALLOC(sz)		malloc(sz)
 #define TEMP_FREE(ptr)		free(ptr)
 
@@ -21,6 +27,10 @@ COMMON_API void			Common_Init();
 COMMON_API const char * GetDataFolder();
 
 #define GET_FIELD_OFFSET(s, f) (uint32_t)(&(((s*)0)->f))
+
+#define SAFE_FREE(ptr) do { if (ptr) { TEMP_FREE(ptr); ptr = nullptr; } } while (0)
+
+COMMON_API bool		IsBigEndian();
 
 /*
 ================================================================================
@@ -31,7 +41,7 @@ file
 COMMON_API FILE *	File_Open(const char* filename, const char* mod);
 COMMON_API bool		File_LoadBinary32(const char* filename, void*& data, int32_t& len);
 COMMON_API void		File_FreeBinary(void* data);
-COMMON_API bool		File_LoadText(const char* filename, char*& data);
+COMMON_API bool		File_LoadText(const char* filename, char*& data, int32_t& len);
 COMMON_API void		File_FreeText(char* data);
 
 /*
@@ -83,6 +93,49 @@ struct image_s {
 
 COMMON_API bool		Img_Load(const char * filename, image_s & image);
 COMMON_API void		Img_Free(image_s & image);
+
+/*
+================================================================================
+model
+================================================================================
+*/
+enum class vertex_format_t {
+	VF_POS_NORMAL,
+	VF_POS_NORMAL_COLOR,
+	VF_POS_NORMAL_UV
+};
+
+struct vertex_pos_normal_s {
+	glm::vec3		pos_;
+	glm::vec3		normal_;
+};
+
+struct vertex_pos_normal_color_s {
+	glm::vec3		pos_;
+	glm::vec3		normal_;
+	glm::vec3		color_;
+};
+
+struct vertex_pos_normal_uv_s {
+	glm::vec3		pos_;
+	glm::vec3		normal_;
+	glm::vec2		uv_;
+};
+
+struct model_s {
+	vertex_format_t	vertex_format_;
+	union {
+		vertex_pos_normal_s*		vertices_pos_normal_;
+		vertex_pos_normal_color_s*	vertices_pos_normal_color_;
+		vertex_pos_normal_uv_s*		vertices_pos_normal_uv_;
+	};
+	uint32_t *		indices_;
+	uint32_t		num_vertex_;
+	uint32_t		num_triangle_;
+};
+
+COMMON_API bool		Model_Load(const char* filename, model_s & model);
+COMMON_API void		Model_Free(model_s& model);
 
 /*
 ================================================================================

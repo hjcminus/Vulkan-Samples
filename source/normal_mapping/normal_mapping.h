@@ -36,12 +36,6 @@ private:
 		glm::vec3			tangent_;
 	};
 
-	struct texture_s {
-		VkImage				image_;
-		VkDeviceMemory		memory_;
-		VkImageView			image_view_;
-	};
-
 	struct ubo_mat_s {
 		glm::mat4			mat_proj_;
 		glm::mat4			mat_view_;
@@ -57,8 +51,8 @@ private:
 	// sampler
 	VkSampler				vk_sampler_;
 
-	texture_s				texture_color_;
-	texture_s				texture_normal_;
+	vk_image_s				texture_color_;
+	vk_image_s				texture_normal_;
 
 	buffer_s				uniform_buffer_mat_;
 	buffer_s				uniform_buffer_light_;
@@ -85,10 +79,6 @@ private:
 	void					SetRenderMode(render_mode_t mode);
 
 	void					KeyF2Down() override;
-
-	bool					LoadTexture(const char * filename, VkFormat format,
-								VkImageUsageFlags image_usage, texture_s & tex);
-	void					FreeTexture(texture_s& tex);
 
 	bool					LoadTextures();
 	void					FreeTextures();

@@ -53,6 +53,6 @@
 
 // commonlib export
 #include "funcs.h"
+#include "ply.h"
 #include "vk_demo.h"
 #include "vk_funcs.h"
-
