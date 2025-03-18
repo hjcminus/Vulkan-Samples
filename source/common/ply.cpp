@@ -238,7 +238,7 @@ bool PLY::LoadData_ASCII() {
 	for (uint32_t i = 0; i < num_vertex_; ++i) {
 		float x = 0.0f, y = 0.0f, z = 0.0f;
 		float nx = 0.0f, ny = 0.0f, nz = 1.0f;
-		float r = 0.0f, g = 0.0f, b = 0.0f, a = 0.0f; // color if any
+		float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f; // color if any
 
 		for (uint32_t p = 0; p < num_property_; ++p) {
 

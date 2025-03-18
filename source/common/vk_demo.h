@@ -17,8 +17,19 @@ public:
 	bool					Init(const char* project_shader_dir);
 	void					Shutdown();
     virtual void			Display() = 0;
+    virtual void			BuildCommandBuffers() = 0;
 
     void                    MainLoop();
+
+    // interface
+    bool                    LoadModel(const char * filename, bool move_to_origin, model_s & model) const;
+
+    bool                    CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size) const;
+    void                    DestroyBuffer(vk_buffer_s& buffer) const;
+    void					UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const;
+
+    void *                  MapMemory(const vk_buffer_s& buffer) const;
+    void                    UnmapMemory(const vk_buffer_s& buffer);
 
 protected:
 
@@ -144,12 +155,13 @@ protected:
     void					DestroyDescriptorPools();
 
     // helper
-    uint32_t                GetMemoryTypeIndex(uint32_t memory_type_bits, VkMemoryPropertyFlags required_memory_properties);
-    bool                    LoadShader(const char* filename, VkShaderModule& shader_module);
+    uint32_t                GetMemoryTypeIndex(uint32_t memory_type_bits, 
+                                VkMemoryPropertyFlags required_memory_properties) const;
+    bool                    LoadShader(const char* filename, VkShaderModule& shader_module) const;
     
     void                    SetTitle(const char * text);
     void                    GetViewMatrix(glm::mat4 & view_mat) const;
-    void                    GetModelMatrix(glm::mat4& model_mat) const;
+    virtual void            GetModelMatrix(glm::mat4& model_mat) const;
 
 protected:
 
@@ -164,26 +176,12 @@ protected:
         int                 right_;     // 0: stopped, 1: right, -1: left
     } movement_;
 
-    // uniform buffer & shader storage buffer
-    struct buffer_s {
-        VkDeviceMemory		memory_;
-        VkDeviceSize		memory_size_;
-        VkBuffer			buffer_;
-        VkDescriptorBufferInfo  buffer_info_;
-    };
-
-    struct vk_image_s {
-        VkImage				image_;
-        VkDeviceMemory		memory_;
-        VkDeviceSize		memory_size_;
-        VkImageView			image_view_;
-    };
-
     static const int        ANGLE_YAW = 0;
     static const int        ANGLE_PITCH = 1;
     // TODO: support ROLL
 
     float                   view_angles_[2];    // measured in degree
+    float                   model_scale_;
 
     float                   move_speed_;
 
@@ -192,8 +190,7 @@ protected:
     virtual void            KeyF2Down();
 
     // helper
-    bool                    CreateBuffer(buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size);
-    void                    DestroyBuffer(buffer_s& buffer);
+    
 
     bool                    Create2DImage(vk_image_s & vk_image, VkFormat format, VkImageTiling tiling, 
                                 VkImageUsageFlags usage, uint32_t width, uint32_t height,
@@ -285,4 +282,6 @@ private:
     void                    DestroyPipelineCache();
 
     void                    CheckMovement();
+    
+    void                    OnResize();
 };

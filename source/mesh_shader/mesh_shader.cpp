@@ -2,102 +2,15 @@
  mesh shader
  *****************************************************************************/
 
-#include "gen_terrain_mid_point.h"
-
 #include "../common/inc.h"
+#include "mesh_shader.h"
+#include "gen_terrain_mid_point.h"
 
 /*
 ================================================================================
 MeshShaderDemo
 ================================================================================
 */
-class MeshShaderDemo : public VkDemo {
-public:
-	MeshShaderDemo();
-	~MeshShaderDemo() override;
-
-	bool					Init();
-	void					Shutdown();
-	void					Display() override;
-
-private:
-
-	struct ubo_mvp_s {
-		glm::mat4			model_view_proj_mat_;
-	};
-
-	struct ubo_terrain_s {
-		int32_t				vertex_count_per_edge_;
-	};
-
-	// VkDeviceCreateInfo::pNext chain
-	VkPhysicalDeviceMeshShaderFeaturesEXT	vk_device_create_next_;
-
-	// mesh shader draw call
-	PFN_vkCmdDrawMeshTasksEXT	vkCmdDrawMeshTasksEXT;
-	
-	// descriptor
-	VkDescriptorSetLayout   vk_descriptorset_layout_;
-	VkDescriptorSet         vk_descriptorset_;
-
-	VkDescriptorSetLayout   vk_descriptorset_layout2_;
-	VkDescriptorSet         vk_descriptorset2_;
-
-	// pipeline
-	VkPipelineLayout        vk_pipeline_layout_;
-
-	VkPipeline              vk_pipeline_wireframe_;
-	VkPipeline				vk_pipeline_fill_;
-
-	buffer_s				uniform_buffer_mvp_;
-	buffer_s				uniform_buffer_terrain_;
-	buffer_s				shader_storage_buffer_heights_;
-	buffer_s				shader_storage_buffer_color_table_;
-
-	bool					wireframe_mode_;
-
-	void					AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const override;
-	void					AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const override;
-
-	void					KeyF2Down() override;
-
-	// uniform buffer
-	bool					CreateUniformBuffers();
-	void					DestroyUniformBuffers();
-
-	// shader storage buffers
-	bool					CreateShaderStorageBuffers();
-	void					DestroyShaderStorageBuffers();
-
-	// descriptor set layout
-	bool					CreateDescriptorSetLayout();
-
-	// descriptor set
-	bool					AllocDemoDescriptorSet();
-	void					FreeDemoDescriptorSet();
-
-	// descriptor set layout2
-	bool					CreateDescriptorSetLayout2();
-
-	// descriptor set2
-	bool					AllocDemoDescriptorSet2();
-	void					FreeDemoDescriptorSet2();
-
-	// pipeline layout
-	bool					CreatePipelineLayout();
-
-	// pipeline
-	bool					CreatePipelines();
-
-	// build command buffer
-	void					BuildCommandBuffer(VkPipeline pipeline);
-
-	void					UpdateMVPUniformBuffer();
-
-	void					UpdateUniformBuffer(buffer_s & buffer, const std::byte* host_data, size_t host_data_size);
-
-};
-
 MeshShaderDemo::MeshShaderDemo():
 	vkCmdDrawMeshTasksEXT(nullptr),
 	vk_descriptorset_layout_(VK_NULL_HANDLE),
@@ -273,6 +186,10 @@ void MeshShaderDemo::Display() {
 	}
 }
 
+void MeshShaderDemo::BuildCommandBuffers() {
+	BuildCommandBuffer(wireframe_mode_ ? vk_pipeline_wireframe_ : vk_pipeline_fill_);
+}
+
 void MeshShaderDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
 	// required by mesh shader
 	extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
@@ -353,7 +270,7 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 	vkUnmapMemory(vk_device_, shader_storage_buffer_heights_.memory_);
 
 	// update ubo_terrain
-	UpdateUniformBuffer(uniform_buffer_terrain_, (const std::byte*)&ubo_terrain, sizeof(ubo_terrain));
+	UpdateBuffer(uniform_buffer_terrain_, &ubo_terrain, sizeof(ubo_terrain));
 
 	// -- shader storage buffer of color table --
 	
@@ -844,7 +761,7 @@ void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 			.width = (float)cfg_viewport_cx_,
 			.height = -(float)cfg_viewport_cy_,
 			.minDepth = 0.0f,
-			.maxDepth = 0.0f
+			.maxDepth = 1.0f
 		};
 		vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
@@ -887,36 +804,9 @@ void MeshShaderDemo::UpdateMVPUniformBuffer() {
 	glm::mat4 model_matrix;
 	GetModelMatrix(model_matrix);
 
-	ubo_mvp.model_view_proj_mat_ = projection_matrix * view_matrix * model_matrix;
+	ubo_mvp.mvp_ = projection_matrix * view_matrix * model_matrix;
 
-	UpdateUniformBuffer(uniform_buffer_mvp_, (const std::byte*)& ubo_mvp, sizeof(ubo_mvp));
-}
-
-void MeshShaderDemo::UpdateUniformBuffer(buffer_s& buffer, const std::byte* host_data, size_t host_data_size) {
-	void* data = nullptr;
-	VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.buffer_info_.offset, buffer.buffer_info_.range, 0, &data);
-	if (rt != VK_SUCCESS) {
-		printf("[UpdateMVPUniformBuffer] vkMapMemory error\n");
-		return;
-	}
-
-	memcpy(data, host_data, host_data_size);
-
-	// flush to make change visible to device
-	VkMappedMemoryRange mapped_range = {};
-
-	mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-	mapped_range.pNext = nullptr;
-	mapped_range.memory = buffer.memory_;
-	mapped_range.offset = buffer.buffer_info_.offset;
-	mapped_range.size = buffer.buffer_info_.range;
-
-	rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
-	if (rt != VK_SUCCESS) {
-		printf("[UpdateMVPUniformBuffer] vkFlushMappedMemoryRanges error\n");
-	}
-
-	vkUnmapMemory(vk_device_, buffer.memory_);
+	UpdateBuffer(uniform_buffer_mvp_, &ubo_mvp, sizeof(ubo_mvp));
 }
 
 /*

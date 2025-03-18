@@ -9,6 +9,7 @@ layout (binding = 0) uniform UBO_MVP {
 layout (std140, binding = 1) uniform UBO_LIGHT {
 	vec4 light_pos;
 	vec4 light_color;
+	float radius;
 } ubo_light;
 
 layout (set = 1, binding = 0) uniform sampler2D texture_color;
@@ -21,7 +22,7 @@ layout (location = 3) in vec3 in_tangent;
 
 layout (location = 0) out vec4 out_frag_color;
 
-const vec3 ambient = vec3(0.1f, 0.1f, 0.1f);
+const vec3 ambient = vec3(0.1, 0.1, 0.1);
 
 void main() {
 	vec3 N = normalize(in_normal);
@@ -38,10 +39,10 @@ void main() {
 
 	vec3 light_dir = normalize(ubo_light.light_pos.xyz - in_pos);
 
-	float diff = max(dot(frag_normal, light_dir), 0.0f);
+	float diff = max(dot(frag_normal, light_dir), 0.0);
 	
 	vec3 diffuse = ubo_light.light_color.rgb * diff;
 	vec3 combined = ambient * mat_color.rgb + diffuse * mat_color.rgb;
 
-	out_frag_color = vec4(combined, 1.0f);
+	out_frag_color = vec4(combined, 1.0);
 }

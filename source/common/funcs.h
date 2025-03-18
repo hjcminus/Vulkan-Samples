@@ -99,10 +99,17 @@ COMMON_API void		Img_Free(image_s & image);
 model
 ================================================================================
 */
-enum class vertex_format_t {
+enum class vertex_format_t : int32_t {
+	VF_POS_COLOR,
 	VF_POS_NORMAL,
 	VF_POS_NORMAL_COLOR,
-	VF_POS_NORMAL_UV
+	VF_POS_NORMAL_UV,
+	VF_POS_NORMAL_UV_TANGENT
+};
+
+struct vertex_pos_color_s {
+	glm::vec3		pos_;
+	glm::vec4		color_;
 };
 
 struct vertex_pos_normal_s {
@@ -113,7 +120,7 @@ struct vertex_pos_normal_s {
 struct vertex_pos_normal_color_s {
 	glm::vec3		pos_;
 	glm::vec3		normal_;
-	glm::vec3		color_;
+	glm::vec4		color_;
 };
 
 struct vertex_pos_normal_uv_s {
@@ -122,19 +129,24 @@ struct vertex_pos_normal_uv_s {
 	glm::vec2		uv_;
 };
 
+struct vertex_pos_normal_uv_tangent_s {
+	glm::vec3			pos_;
+	glm::vec3			normal_;
+	glm::vec2			uv_;
+	glm::vec3			tangent_;
+};
+
 struct model_s {
 	vertex_format_t	vertex_format_;
-	union {
-		vertex_pos_normal_s*		vertices_pos_normal_;
-		vertex_pos_normal_color_s*	vertices_pos_normal_color_;
-		vertex_pos_normal_uv_s*		vertices_pos_normal_uv_;
-	};
+	void *			vertices_;
 	uint32_t *		indices_;
 	uint32_t		num_vertex_;
 	uint32_t		num_triangle_;
+	float			min_[3];
+	float			max_[3];
 };
 
-COMMON_API bool		Model_Load(const char* filename, model_s & model);
+COMMON_API bool		Model_Load(const char* filename, bool move_to_origin, model_s & model);
 COMMON_API void		Model_Free(model_s& model);
 
 /*

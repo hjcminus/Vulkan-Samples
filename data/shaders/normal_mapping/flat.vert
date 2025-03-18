@@ -15,7 +15,7 @@ layout (location = 1) out vec3 out_normal;
 layout (location = 2) out vec2 out_texcoord2d;
 
 void main() {
-    gl_Position = ubo_mvp.proj * ubo_mvp.view * ubo_mvp.model * vec4(in_pos, 1.0f);
+    gl_Position = ubo_mvp.proj * ubo_mvp.view * ubo_mvp.model * vec4(in_pos, 1.0);
 	out_pos = (ubo_mvp.model * vec4(in_pos, 1.0)).xyz;
 	out_normal = (ubo_mvp.model * vec4(in_normal, 0.0)).xyz;
 	out_texcoord2d = in_texcoord2d;

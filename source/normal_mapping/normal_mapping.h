@@ -20,6 +20,7 @@ public:
 	bool					Init();
 	void					Shutdown();
 	void					Display() override;
+	void					BuildCommandBuffers() override;
 
 private:
 
@@ -29,35 +30,16 @@ private:
 		RM_NORMAL_MAPPING
 	};
 
-	struct vertex_s {
-		glm::vec3			pos_;
-		glm::vec3			normal_;
-		glm::vec2			uv_;
-		glm::vec3			tangent_;
-	};
-
-	struct ubo_mat_s {
-		glm::mat4			mat_proj_;
-		glm::mat4			mat_view_;
-		glm::mat4			mat_model_;
-	};
-
-	// 16 bytes aligned
-	struct ubo_light_s {
-		glm::vec4			light_pos_;
-		glm::vec4			light_color_;
-	};
-
 	// sampler
 	VkSampler				vk_sampler_;
 
 	vk_image_s				texture_color_;
 	vk_image_s				texture_normal_;
 
-	buffer_s				uniform_buffer_mat_;
-	buffer_s				uniform_buffer_light_;
-	buffer_s				vertex_buffer_;
-	buffer_s				index_buffer_;
+	vk_buffer_s				uniform_buffer_mat_;
+	vk_buffer_s				uniform_buffer_light_;
+	vk_buffer_s				vertex_buffer_;
+	vk_buffer_s				index_buffer_;
 	uint32_t				index_count_;
 
 	// descriptor
@@ -83,7 +65,7 @@ private:
 	bool					LoadTextures();
 	void					FreeTextures();
 
-	bool					CreaetSampler();
+	bool					CreateSampler();
 	void					DestroySampler();
 
 	bool					CreateUniformBuffers();
@@ -117,8 +99,6 @@ private:
 
 	void					UpdateMVPUniformBuffer();
 	void					SetupLightUniformBuffer();
-
-	void					UpdateUniformBuffer(buffer_s& buffer, const std::byte* host_data, size_t host_data_size);
 
 };
 

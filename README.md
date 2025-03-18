@@ -7,6 +7,9 @@
  
 ## Projects
 
+### triangle
+  Draw a colored triangle.
+
 ### mesh shader
   - Using the mesh shader to dynamically generate a triangle mesh of a height field.
   - Press the F2 key to toggle wireframe and fill render mode.

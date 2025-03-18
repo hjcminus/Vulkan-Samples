@@ -53,6 +53,7 @@ VkDemo::VkDemo():
     vk_render_pass_(VK_NULL_HANDLE),
 	vk_command_pool_(VK_NULL_HANDLE),
     enable_display_(false),
+    model_scale_(1.0f),
     move_speed_(2.0f),
     left_button_down_(false),
     cursor_x_(0),
@@ -195,6 +196,122 @@ void VkDemo::MainLoop() {
 #endif
 }
 
+// interface
+bool VkDemo::LoadModel(const char* filename, bool move_to_origin, model_s& model) const {
+    char full_filename[MAX_PATH];
+    Str_SPrintf(full_filename, MAX_PATH, "%s/%s", models_dir_, filename);
+
+    return Model_Load(full_filename, move_to_origin, model);
+}
+
+bool VkDemo::CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size) const {
+    // The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
+        // or offset plus size must equal the size of memory
+    VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
+    VkDeviceSize aligned_req_size = req_size;
+
+    if (aligned_req_size % nonCoherentAtomSize) {
+        aligned_req_size = ((aligned_req_size / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
+    }
+
+    VkBufferCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = aligned_req_size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr  // is a pointer to an array of queue families that will access this buffer.
+        // It is ignored if sharingMode is not VK_SHARING_MODE_CONCURRENT.
+    };
+
+    if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &buffer.buffer_)) {
+        return false;
+    }
+
+    VkMemoryRequirements mem_req = {};
+    vkGetBufferMemoryRequirements(vk_device_, buffer.buffer_, &mem_req);
+
+    VkMemoryAllocateInfo mem_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+    };
+
+    if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &buffer.memory_)) {
+        return false;
+    }
+
+    buffer.memory_size_ = mem_req.size;
+
+    if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
+        return false;
+    }
+
+    buffer.buffer_info_.buffer = buffer.buffer_;
+    buffer.buffer_info_.offset = 0;
+    buffer.buffer_info_.range = aligned_req_size;
+
+    return true;
+}
+
+void VkDemo::DestroyBuffer(vk_buffer_s& buffer) const {
+    if (buffer.memory_) {
+        vkFreeMemory(vk_device_, buffer.memory_, nullptr);
+        buffer.memory_ = VK_NULL_HANDLE;
+    }
+
+    if (buffer.buffer_) {
+        vkDestroyBuffer(vk_device_, buffer.buffer_, nullptr);
+        buffer.buffer_ = VK_NULL_HANDLE;
+    }
+
+    memset(&buffer, 0, sizeof(buffer));
+}
+
+void VkDemo::UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const {
+    void* data = nullptr;
+    VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.buffer_info_.offset, buffer.buffer_info_.range, 0, &data);
+    if (rt != VK_SUCCESS) {
+        printf("[UpdateBuffer] vkMapMemory error\n");
+        return;
+    }
+
+    memcpy(data, host_data, host_data_size);
+
+    // flush to make change visible to device
+    VkMappedMemoryRange mapped_range = {};
+
+    mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    mapped_range.pNext = nullptr;
+    mapped_range.memory = buffer.memory_;
+    mapped_range.offset = buffer.buffer_info_.offset;
+    mapped_range.size = buffer.buffer_info_.range;
+
+    rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
+    if (rt != VK_SUCCESS) {
+        printf("[UpdateBuffer] vkFlushMappedMemoryRanges error\n");
+    }
+
+    vkUnmapMemory(vk_device_, buffer.memory_);
+}
+
+void* VkDemo::MapMemory(const vk_buffer_s& buffer) const {
+    void* data = nullptr;
+    if (VK_SUCCESS != vkMapMemory(vk_device_, buffer.memory_, 0, buffer.memory_size_, 0, &data)) {
+        return nullptr;
+    }
+
+    return data;
+}
+
+void VkDemo::UnmapMemory(const vk_buffer_s& buffer) {
+    vkUnmapMemory(vk_device_, buffer.memory_);
+}
+
 void VkDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
     // to override by child class
 }
@@ -251,7 +368,9 @@ void VkDemo::DestroyDescriptorPools() {
 }
 
 // helper
-uint32_t VkDemo::GetMemoryTypeIndex(uint32_t memory_type_bits, VkMemoryPropertyFlags required_memory_properties) {
+uint32_t VkDemo::GetMemoryTypeIndex(uint32_t memory_type_bits, 
+    VkMemoryPropertyFlags required_memory_properties) const
+{
     uint32_t bit_mask = 1;
     for (uint32_t i = 0; i < vk_physical_device_memory_properties_.memoryTypeCount; ++i) {
         if (memory_type_bits & bit_mask) {
@@ -268,7 +387,7 @@ uint32_t VkDemo::GetMemoryTypeIndex(uint32_t memory_type_bits, VkMemoryPropertyF
     return 0xFFFFFFFF;
 }
 
-bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) {
+bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) const {
     shader_module = VK_NULL_HANDLE;
 
     char fullfilename[1024];
@@ -310,11 +429,19 @@ void VkDemo::GetViewMatrix(glm::mat4& view_mat) const {
 
 void VkDemo::GetModelMatrix(glm::mat4& model_mat) const {
     if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
-        model_mat = glm::mat4(1.0f);
+        model_mat = glm::scale(glm::mat4(1.0f), glm::vec3(model_scale_));
     }
     else {
-        model_mat = glm::rotate(glm::mat4(1.0f), 
-            glm::radians(view_angles_[ANGLE_YAW]), 
+
+        model_mat = glm::scale(glm::mat4(1.0f),
+            glm::vec3(model_scale_));
+
+        model_mat = glm::rotate(model_mat,
+            glm::radians(-view_angles_[ANGLE_PITCH]),
+            glm::vec3(1.0f, 0.0f, 0.0f));
+
+        model_mat = glm::rotate(model_mat,
+            glm::radians(view_angles_[ANGLE_YAW]),
             glm::vec3(0.0f, 0.0f, 1.0f));
     }
 }
@@ -418,73 +545,6 @@ void VkDemo::KeyF2Down() {
 }
 
 // helper
-bool VkDemo::CreateBuffer(buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size) {
-    // The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
-        // or offset plus size must equal the size of memory
-    VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
-    VkDeviceSize aligned_req_size = req_size;
-
-    if (aligned_req_size % nonCoherentAtomSize) {
-        aligned_req_size = ((aligned_req_size / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
-    }
-
-    VkBufferCreateInfo create_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .size = aligned_req_size,
-        .usage = usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 0,
-        .pQueueFamilyIndices = nullptr  // is a pointer to an array of queue families that will access this buffer.
-        // It is ignored if sharingMode is not VK_SHARING_MODE_CONCURRENT.
-    };
-
-    if (VK_SUCCESS != vkCreateBuffer(vk_device_, &create_info, nullptr, &buffer.buffer_)) {
-        return false;
-    }
-
-    VkMemoryRequirements mem_req = {};
-    vkGetBufferMemoryRequirements(vk_device_, buffer.buffer_, &mem_req);
-
-    VkMemoryAllocateInfo mem_alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = nullptr,
-        .allocationSize = mem_req.size,
-        .memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-    };
-
-    if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &buffer.memory_)) {
-        return false;
-    }
-
-    buffer.memory_size_ = mem_req.size;
-
-    if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
-        return false;
-    }
-
-    buffer.buffer_info_.buffer = buffer.buffer_;
-    buffer.buffer_info_.offset = 0;
-    buffer.buffer_info_.range = aligned_req_size;
-
-    return true;
-}
-
-void VkDemo::DestroyBuffer(buffer_s& buffer) {
-    if (buffer.memory_) {
-        vkFreeMemory(vk_device_, buffer.memory_, nullptr);
-        buffer.memory_ = VK_NULL_HANDLE;
-    }
-
-    if (buffer.buffer_) {
-        vkDestroyBuffer(vk_device_, buffer.buffer_, nullptr);
-        buffer.buffer_ = VK_NULL_HANDLE;
-    }
-
-    memset(&buffer, 0, sizeof(buffer));
-}
 
 bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling tiling, 
     VkImageUsageFlags usage, uint32_t width, uint32_t height, 
@@ -762,6 +822,9 @@ LRESULT VkDemo::DemoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (enable_display_) {
             Display();
         }
+        break;
+    case WM_SIZE:
+        OnResize();
         break;
     case WM_LBUTTONDOWN:
         left_button_down_ = true;
@@ -1871,6 +1934,40 @@ void VkDemo::CheckMovement() {
         camera_.target_ += right_delta;
     }
 
+}
+
+void VkDemo::OnResize() {
+    enable_display_ = false;
+
+    if (!vk_instance_) {
+        return;
+    }
+
+    DestroyFramebuffers();
+    DestroyDepthStencil();
+    DestroySwapChain();
+    DestroySurface();
+
+    if (!CreateSurface()) {
+        return;
+    }
+
+    if (!CreateSwapChain(false)) {
+        return;
+    }
+
+    if (!CreateDepthStencil()) {
+        return;
+    }
+
+    if (!CreateFramebuffers()) {
+        return;
+    }
+
+    // rebuld command buffer
+    BuildCommandBuffers();
+
+    enable_display_ = true;
 }
 
 

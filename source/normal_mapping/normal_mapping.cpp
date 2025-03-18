@@ -54,7 +54,7 @@ bool NormalMappingDemo::Init() {
 		return false;
 	}
 
-	if (!CreaetSampler()) {
+	if (!CreateSampler()) {
 		return false;
 	}
 
@@ -204,10 +204,8 @@ void NormalMappingDemo::Display() {
 	}
 }
 
-void NormalMappingDemo::SetRenderMode(render_mode_t mode) {
-	render_mode_ = mode;
-
-	switch (mode) {
+void NormalMappingDemo::BuildCommandBuffers() {
+	switch (render_mode_) {
 	case render_mode_t::RM_TEXTURE:
 		BuildCommandBuffer(vk_pipeline_tex_);
 		SetTitle("Normal mapping (F2 to toggle render mode): [Draw texture]");
@@ -221,6 +219,11 @@ void NormalMappingDemo::SetRenderMode(render_mode_t mode) {
 		SetTitle("Normal mapping (F2 to toggle render mode): [Normal Mapping]");
 		break;
 	}
+}
+
+void NormalMappingDemo::SetRenderMode(render_mode_t mode) {
+	render_mode_ = mode;
+	BuildCommandBuffers();
 }
 
 void NormalMappingDemo::KeyF2Down() {
@@ -256,7 +259,7 @@ void NormalMappingDemo::FreeTextures() {
 	Destroy2DImage(texture_color_);
 }
 
-bool NormalMappingDemo::CreaetSampler() {
+bool NormalMappingDemo::CreateSampler() {
 	VkSamplerCreateInfo create_info = {};
 
 	create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -289,8 +292,8 @@ void NormalMappingDemo::DestroySampler() {
 }
 
 bool NormalMappingDemo::CreateUniformBuffers() {
-	return CreateBuffer(uniform_buffer_mat_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_mat_s))
-		&& CreateBuffer(uniform_buffer_light_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(uniform_buffer_light_));
+	return CreateBuffer(uniform_buffer_mat_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_mvp_sep_s))
+		&& CreateBuffer(uniform_buffer_light_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_light_s));
 }
 
 void NormalMappingDemo::DestroyUniformBuffers() {
@@ -299,13 +302,13 @@ void NormalMappingDemo::DestroyUniformBuffers() {
 }
 
 bool NormalMappingDemo::CreateVertexBuffer() {
-	std::vector<vertex_s> vertex_buffer = {
+	std::vector<vertex_pos_normal_uv_tangent_s> vertex_buffer = {
 		{ { -1.0f, 0.0f, -1.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
 		{ {  1.0f, 0.0f, -1.0f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
 		{ {  1.0f, 0.0f,  1.0f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 1.0f }, { 1.0f, 0.0f, 0.0f } },
 		{ { -1.0f, 0.0f,  1.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f } }
 	};
-	uint32_t vertex_buffer_size = static_cast<uint32_t>(vertex_buffer.size()) * sizeof(vertex_s);
+	uint32_t vertex_buffer_size = static_cast<uint32_t>(vertex_buffer.size()) * sizeof(vertex_pos_normal_uv_tangent_s);
 
 	if (!CreateBuffer(vertex_buffer_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer_size)) {
 		return false;
@@ -591,7 +594,7 @@ bool NormalMappingDemo::CreatePipeline_Tex() {
 
 	VkVertexInputBindingDescription vertex_binding_description = {};
 	vertex_binding_description.binding = 0;
-	vertex_binding_description.stride = (uint32_t)sizeof(vertex_s);
+	vertex_binding_description.stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
 	vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
 	std::array<VkVertexInputAttributeDescription, 2> vertex_attribute_descriptions;
@@ -600,12 +603,12 @@ bool NormalMappingDemo::CreatePipeline_Tex() {
 	vertex_attribute_descriptions[0].location = 0;
 	vertex_attribute_descriptions[0].binding = 0;
 	vertex_attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_s, pos_);
+	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, pos_);
 
 	vertex_attribute_descriptions[1].location = 1;
 	vertex_attribute_descriptions[1].binding = 0;
 	vertex_attribute_descriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
-	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_s, uv_);
+	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_);
 
 	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -806,7 +809,7 @@ bool NormalMappingDemo::CreatePipeline_Flat() {
 
 	VkVertexInputBindingDescription vertex_binding_description = {};
 	vertex_binding_description.binding = 0;
-	vertex_binding_description.stride = (uint32_t)sizeof(vertex_s);
+	vertex_binding_description.stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
 	vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
 	std::array<VkVertexInputAttributeDescription, 3> vertex_attribute_descriptions;
@@ -817,19 +820,19 @@ bool NormalMappingDemo::CreatePipeline_Flat() {
 	vertex_attribute_descriptions[0].location = 0;
 	vertex_attribute_descriptions[0].binding = 0;
 	vertex_attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_s, pos_);
+	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, pos_);
 
 	// normal
 	vertex_attribute_descriptions[1].location = 1;
 	vertex_attribute_descriptions[1].binding = 0;
 	vertex_attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_s, normal_);
+	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, normal_);
 
 	// uv
 	vertex_attribute_descriptions[2].location = 2;
 	vertex_attribute_descriptions[2].binding = 0;
 	vertex_attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-	vertex_attribute_descriptions[2].offset = GET_FIELD_OFFSET(vertex_s, uv_);
+	vertex_attribute_descriptions[2].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_);
 
 	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1030,7 +1033,7 @@ bool NormalMappingDemo::CreatePipeline_NormalMapping() {
 
 	VkVertexInputBindingDescription vertex_binding_description = {};
 	vertex_binding_description.binding = 0;
-	vertex_binding_description.stride = (uint32_t)sizeof(vertex_s);
+	vertex_binding_description.stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
 	vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
 	std::array<VkVertexInputAttributeDescription, 4> vertex_attribute_descriptions;
@@ -1041,25 +1044,25 @@ bool NormalMappingDemo::CreatePipeline_NormalMapping() {
 	vertex_attribute_descriptions[0].location = 0;
 	vertex_attribute_descriptions[0].binding = 0;
 	vertex_attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_s, pos_);
+	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, pos_);
 
 	// normal
 	vertex_attribute_descriptions[1].location = 1;
 	vertex_attribute_descriptions[1].binding = 0;
 	vertex_attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_s, normal_);
+	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, normal_);
 
 	// uv
 	vertex_attribute_descriptions[2].location = 2;
 	vertex_attribute_descriptions[2].binding = 0;
 	vertex_attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-	vertex_attribute_descriptions[2].offset = GET_FIELD_OFFSET(vertex_s, uv_);
+	vertex_attribute_descriptions[2].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_);
 
 	// tangent
 	vertex_attribute_descriptions[3].location = 3;
 	vertex_attribute_descriptions[3].binding = 0;
 	vertex_attribute_descriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[3].offset = GET_FIELD_OFFSET(vertex_s, tangent_);
+	vertex_attribute_descriptions[3].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, tangent_);
 
 	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -1261,7 +1264,7 @@ void NormalMappingDemo::BuildCommandBuffer(VkPipeline pipeline) {
 			.width = (float)cfg_viewport_cx_,
 			.height = -(float)cfg_viewport_cy_,
 			.minDepth = 0.0f,
-			.maxDepth = 0.0f
+			.maxDepth = 1.0f
 		};
 		vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
@@ -1297,54 +1300,27 @@ void NormalMappingDemo::BuildCommandBuffer(VkPipeline pipeline) {
 }
 
 void NormalMappingDemo::UpdateMVPUniformBuffer() {
-	ubo_mat_s ubo_mvp = {};
+	ubo_mvp_sep_s ubo_mvp_sep = {};
 
-	ubo_mvp.mat_proj_ = glm::perspective(glm::radians(70.0f),
+	ubo_mvp_sep.proj_ = glm::perspective(glm::radians(70.0f),
 		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 0.1f, 16.0f);
 
-	GetViewMatrix(ubo_mvp.mat_view_);
-	GetModelMatrix(ubo_mvp.mat_model_);
+	GetViewMatrix(ubo_mvp_sep.view_);
+	GetModelMatrix(ubo_mvp_sep.model_);
 
-	UpdateUniformBuffer(uniform_buffer_mat_, (const std::byte*)&ubo_mvp, sizeof(ubo_mvp));
+	UpdateBuffer(uniform_buffer_mat_, &ubo_mvp_sep, sizeof(ubo_mvp_sep));
 }
 
 void NormalMappingDemo::SetupLightUniformBuffer() {
 	ubo_light_s ubo_light = {};
 
 	// point light
-	ubo_light.light_pos_ = glm::vec4(2.0f, -2.0f, 2.0f, 1.0f);
-	ubo_light.light_color_ = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+	ubo_light.pos_ = glm::vec4(2.0f, -2.0f, 2.0f, 1.0f);
+	ubo_light.color_ = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+	ubo_light.radius_ = 10.0f;
 
-	UpdateUniformBuffer(uniform_buffer_light_, (const std::byte*)&ubo_light, sizeof(ubo_light));
+	UpdateBuffer(uniform_buffer_light_, &ubo_light, sizeof(ubo_light));
 }
-
-void NormalMappingDemo::UpdateUniformBuffer(buffer_s& buffer, const std::byte* host_data, size_t host_data_size) {
-	void* data = nullptr;
-	VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.buffer_info_.offset, buffer.buffer_info_.range, 0, &data);
-	if (rt != VK_SUCCESS) {
-		printf("[UpdateMVPUniformBuffer] vkMapMemory error\n");
-		return;
-	}
-
-	memcpy(data, host_data, host_data_size);
-
-	// flush to make change visible to device
-	VkMappedMemoryRange mapped_range = {};
-
-	mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-	mapped_range.pNext = nullptr;
-	mapped_range.memory = buffer.memory_;
-	mapped_range.offset = buffer.buffer_info_.offset;
-	mapped_range.size = buffer.buffer_info_.range;
-
-	rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
-	if (rt != VK_SUCCESS) {
-		printf("[UpdateMVPUniformBuffer] vkFlushMappedMemoryRanges error\n");
-	}
-
-	vkUnmapMemory(vk_device_, buffer.memory_);
-}
-
 
 /*
 ================================================================================

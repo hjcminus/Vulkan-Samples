@@ -1097,7 +1097,9 @@ model
 
 static bool Model_LoadPLY(const char* filename, model_s & model);
 
-COMMON_API bool Model_Load(const char* filename, model_s& model) {
+COMMON_API bool Model_Load(const char* filename, bool move_to_origin, model_s& model) {
+	memset(&model, 0, sizeof(model));
+
 	const char* ext = strrchr(filename, '.');
 	if (!ext) {
 		printf("Could not get filename extension.\n");
@@ -1105,7 +1107,100 @@ COMMON_API bool Model_Load(const char* filename, model_s& model) {
 	}
 
 	if (Str_ICmp(ext + 1, "ply") == 0) {
-		return Model_LoadPLY(filename, model);
+		if (Model_LoadPLY(filename, model)) {
+			size_t stride = sizeof(glm::vec3);
+
+			switch (model.vertex_format_) {
+				case vertex_format_t::VF_POS_COLOR:
+					stride = sizeof(vertex_pos_color_s);
+					break;
+				case vertex_format_t::VF_POS_NORMAL:
+					stride = sizeof(vertex_pos_normal_s);
+					break;
+				case vertex_format_t::VF_POS_NORMAL_COLOR:
+					stride = sizeof(vertex_pos_normal_color_s);
+					break;
+				case vertex_format_t::VF_POS_NORMAL_UV:
+					stride = sizeof(vertex_pos_normal_uv_s);
+					break;
+				case vertex_format_t::VF_POS_NORMAL_UV_TANGENT:
+					stride = sizeof(vertex_pos_normal_uv_tangent_s);
+					break;
+				default:
+					Model_Free(model);
+					printf("bad vertex format\n");
+					return false;
+			}
+
+			if (model.num_vertex_) {
+				// calculate min max
+				char* v = (char*)model.vertices_;
+
+				glm::vec3* first_pos = (glm::vec3*)v;
+
+				float min_pos[3], max_pos[3];
+
+				min_pos[0] = max_pos[0] = first_pos->x;
+				min_pos[1] = max_pos[1] = first_pos->y;
+				min_pos[2] = max_pos[2] = first_pos->z;
+
+				for (uint32_t i = 1; i < model.num_vertex_; ++i) {
+					v += stride;
+					float * pos = (float*)v;
+
+					for (int j = 0; j < 3; ++j) {
+						if (pos[j] < min_pos[j]) {
+							min_pos[j] = pos[j];
+						}
+						if (pos[j] > max_pos[j]) {
+							max_pos[j] = pos[j];
+						}
+					}
+				}
+
+				model.min_[0] = min_pos[0];
+				model.min_[1] = min_pos[1];
+				model.min_[2] = min_pos[2];
+
+				model.max_[0] = max_pos[0];
+				model.max_[1] = max_pos[1];
+				model.max_[2] = max_pos[2];
+
+				if (move_to_origin) {
+					float ctr[3];
+
+					for (int j = 0; j < 3; ++j) {
+						ctr[j] = (min_pos[j] + max_pos[j]) * 0.5f;
+					}
+
+					v = (char*)model.vertices_;
+					for (uint32_t i = 0; i < model.num_vertex_; ++i) {
+						
+						float* pos = (float*)v;
+						
+						pos[0] -= ctr[0];
+						pos[1] -= ctr[1];
+						pos[2] -= ctr[2];
+
+						v += stride;
+					}
+
+					model.min_[0] -= ctr[0];
+					model.min_[1] -= ctr[1];
+					model.min_[2] -= ctr[2];
+
+					model.max_[0] -= ctr[0];
+					model.max_[1] -= ctr[1];
+					model.max_[2] -= ctr[2];
+				}
+
+			}
+
+			return true;
+		}
+		else {
+			return false;
+		}
 	}
 	else {
 		printf("Unsupported model file format %s.\n", ext + 1);
@@ -1119,9 +1214,9 @@ COMMON_API void Model_Free(model_s& model) {
 		model.indices_ = nullptr;
 	}
 
-	if (model.vertices_pos_normal_) {
-		TEMP_FREE(model.vertices_pos_normal_);
-		model.vertices_pos_normal_ = nullptr;
+	if (model.vertices_) {
+		TEMP_FREE(model.vertices_);
+		model.vertices_ = nullptr;
 	}
 
 	model.num_vertex_ = model.num_triangle_ = 0;
@@ -1144,14 +1239,14 @@ static bool Model_LoadPLY(const char* filename, model_s& model) {
 	model.num_vertex_ = num_vertex;
 
 	if (color_lst) {
-		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL;
+		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL_COLOR;
 
 		vertex_pos_normal_color_s * buf = (vertex_pos_normal_color_s*)TEMP_ALLOC(sizeof(vertex_pos_normal_color_s) * num_vertex);
 		if (!buf) {
 			return false;
 		}
 		
-		model.vertices_pos_normal_color_ = buf;
+		model.vertices_ = buf;
 
 		for (uint32_t i = 0; i < num_vertex; ++i) {
 			buf[i].pos_ = pos_lst[i];
@@ -1167,7 +1262,7 @@ static bool Model_LoadPLY(const char* filename, model_s& model) {
 			return false;
 		}
 
-		model.vertices_pos_normal_uv_ = buf;
+		model.vertices_ = buf;
 
 		for (uint32_t i = 0; i < num_vertex; ++i) {
 			buf[i].pos_ = pos_lst[i];
@@ -1180,12 +1275,10 @@ static bool Model_LoadPLY(const char* filename, model_s& model) {
 
 		vertex_pos_normal_s * buf = (vertex_pos_normal_s*)TEMP_ALLOC(sizeof(vertex_pos_normal_s) * num_vertex);
 		if (!buf) {
-			TEMP_FREE(model.vertices_pos_normal_);
-			model.vertices_pos_normal_ = nullptr;
 			return false;
 		}
 
-		model.vertices_pos_normal_ = buf;
+		model.vertices_ = buf;
 
 		for (uint32_t i = 0; i < num_vertex; ++i) {
 			buf[i].pos_ = pos_lst[i];
