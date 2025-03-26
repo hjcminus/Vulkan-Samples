@@ -16,8 +16,8 @@ public:
 
 	bool					Init();
 	void					Shutdown();
-	void					Display() override;
 	void					BuildCommandBuffers() override;
+	void					Update() override;
 
 private:
 
@@ -50,15 +50,21 @@ private:
 	vk_buffer_s				shader_storage_buffer_color_table_;
 
 	bool					wireframe_mode_;
+	uint32_t				random_seed_;
+	static const terrain_size_t	TERRAIN_SIZE = terrain_size_t::TS_512;
+	static const int		TERRAIN_MAX_Z = 64;
+	uint32_t				vertex_count_per_edge_;
 
 	void					AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const override;
 	void					AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const override;
 
-	void					KeyF2Down() override;
+	void					FuncKeyDown(uint32_t key) override;
 
 	// uniform buffer
 	bool					CreateUniformBuffers();
 	void					DestroyUniformBuffers();
+
+	bool					UpdateTerrainUBO();
 
 	// shader storage buffers
 	bool					CreateShaderStorageBuffers();
@@ -83,6 +89,8 @@ private:
 
 	// pipeline
 	bool					CreatePipelines();
+
+	void					UpdateTerrain();
 
 	// build command buffer
 	void					BuildCommandBuffer(VkPipeline pipeline);

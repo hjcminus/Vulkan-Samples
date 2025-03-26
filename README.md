@@ -20,3 +20,7 @@
   Also known as bump mapping. It is a technique to make a bumpy effect on a flat surface.
   - Press the F2 key to toggle between texture, flat lighting, and normal mapping mode.
   - Hold the left button and move to rotate the brick wall.
+  
+### instancing
+  Demonstrate instancing drawing.
+  

@@ -6,6 +6,7 @@ file(GLOB SHADERS "${SHADER_DIR}/*.task" "${SHADER_DIR}/*.mesh" "${SHADER_DIR}/*
 
 source_group("shaders" FILES ${SHADERS})
 add_executable(mesh_shader ${SOURCES} ${HEADERS} ${SHADERS})
+set_property(TARGET mesh_shader PROPERTY FOLDER "samples")
 
 target_include_directories(mesh_shader PRIVATE $ENV{VULKAN_SDK}/Include)
 target_include_directories(mesh_shader PRIVATE ${PROJECT_SOURCE_DIR}/third_party/glm-1.0.1)

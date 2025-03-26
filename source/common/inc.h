@@ -34,11 +34,15 @@
 
 // stdlib
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
 #include <malloc.h>
 #include <wchar.h>
+#include <time.h>
+#include <math.h>
+#include <memory.h>
 
 // stl
 #include <vector>
@@ -50,10 +54,12 @@
 // glm
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 // commonlib export
 #include "funcs.h"
 #include "ply.h"
+#include "obj.h"
 #include "vk_defines.h"
 #include "vk_demo.h"
 #include "vk_model.h"

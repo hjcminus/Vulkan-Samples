@@ -91,7 +91,7 @@ const glm::vec3* PLY::GetNormal() const {
 	return normals_;
 }
 
-const glm::vec2* PLY::GetNV() const {
+const glm::vec2* PLY::GetUV() const {
 	return uv_lst_;
 }
 
@@ -614,7 +614,7 @@ void PLY::CalculateNormals() {
 	}
 
 	for (uint32_t i = 0; i < num_vertex_; ++i) {
-		glm::normalize(normals_[i]);
+		normals_[i] = glm::normalize(normals_[i]);
 	}
 }
 

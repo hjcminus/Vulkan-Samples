@@ -31,7 +31,7 @@ NormalMappingDemo::NormalMappingDemo():
 	memset(&texture_normal_, 0, sizeof(texture_normal_));
 
 	memset(&uniform_buffer_mat_, 0, sizeof(uniform_buffer_mat_));
-	memset(&uniform_buffer_light_, 0, sizeof(uniform_buffer_light_));
+	memset(&uniform_buffer_point_light_, 0, sizeof(uniform_buffer_point_light_));
 
 	memset(&vertex_buffer_, 0, sizeof(vertex_buffer_));
 	memset(&index_buffer_, 0, sizeof(index_buffer_));
@@ -42,11 +42,13 @@ NormalMappingDemo::~NormalMappingDemo() {
 }
 
 bool NormalMappingDemo::Init() {
-	if (!VkDemo::Init("normal_mapping" /* shader files directory */)) {
+	if (!VkDemo::Init("normal_mapping" /* shader files directory */,
+		16, 0, 16, 16)) {
 		return false;
 	}
 
-	if (!CreateDescriptorPools(16, 0, 16, 16)) {
+	if (!CreateSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
+		VK_SAMPLER_ADDRESS_MODE_REPEAT, vk_sampler_)) {
 		return false;
 	}
 
@@ -54,15 +56,11 @@ bool NormalMappingDemo::Init() {
 		return false;
 	}
 
-	if (!CreateSampler()) {
-		return false;
-	}
-
 	if (!CreateUniformBuffers()) {
 		return false;
 	}
 
-	if (!CreateVertexBuffer()) {
+	if (!CreateWall()) {
 		return false;
 	}
 
@@ -113,6 +111,8 @@ bool NormalMappingDemo::Init() {
 
 	enable_display_ = true;
 
+	printf("F2: switch render mode\n");
+
 	return true;
 }
 
@@ -125,83 +125,12 @@ void NormalMappingDemo::Shutdown() {
 	DestroyDescriptorSetLayout(vk_descriptorset_layout_sampler_);
 	DestroyDescriptorSetLayout(vk_descriptorset_layout_uniform_);
 	DestroyIndexBuffer();
-	DestroyVertexBuffer();
+	DestroyWall();
 	DestroyUniformBuffers();
-	DestroySampler();
 	FreeTextures();
-
-	DestroyDescriptorPools();
+	DestroySampler(vk_sampler_);
 
 	VkDemo::Shutdown();
-}
-
-void NormalMappingDemo::Display() {
-	uint32_t current_image_idx = 0;
-	VkResult rt;
-
-	UpdateMVPUniformBuffer();
-
-	// If semaphore is not VK_NULL_HANDLE, it must not have any uncompleted signal or wait
-	//   operations pending
-	// If fence is not VK_NULL_HANDLE, fence must be unsignaled
-	// semaphore and fence must not both be equal to VK_NULL_HANDLE
-	rt = vkAcquireNextImageKHR(vk_device_, vk_swapchain_, UINT64_MAX /* never timeout */,
-		vk_semaphore_present_complete_, VK_NULL_HANDLE, &current_image_idx);
-
-	if (rt != VK_SUCCESS) {
-		printf("vkAcquireNextImageKHR error\n");
-		return;
-	}
-
-	VkFence fence = vk_wait_fences_[current_image_idx];
-
-	vkWaitForFences(vk_device_, 1, &fence, VK_TRUE /* waitAll */, UINT64_MAX /* never timeout */);
-	vkResetFences(vk_device_, 1, &fence);	// set the state of current fence to unsignal.
-
-	VkSubmitInfo submit_info = {};
-
-	VkPipelineStageFlags pipeline_stage_flags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submit_info.pNext = nullptr;
-	submit_info.waitSemaphoreCount = 1;
-	submit_info.pWaitSemaphores = &vk_semaphore_present_complete_;
-	submit_info.pWaitDstStageMask = &pipeline_stage_flags;
-	submit_info.commandBufferCount = 1;
-	submit_info.pCommandBuffers = &vk_draw_cmd_buffers_[current_image_idx];
-	submit_info.signalSemaphoreCount = 1;
-	submit_info.pSignalSemaphores = &vk_semaphore_render_complete_;
-
-	// change command buffer state from executable to pending
-	// The fence (optional) will be signaled once all submitted command buffers have completed execution.
-	rt = vkQueueSubmit(vk_graphics_queue_, 1, &submit_info, fence);
-	if (rt != VK_SUCCESS) {
-		printf("vkQueueSubmit error\n");
-		return;
-	}
-
-	VkPresentInfoKHR present_info = {};
-
-	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	present_info.pNext = nullptr;
-	present_info.waitSemaphoreCount = 1;
-	present_info.pWaitSemaphores = &vk_semaphore_render_complete_;
-	present_info.swapchainCount = 1;
-	present_info.pSwapchains = &vk_swapchain_;
-	present_info.pImageIndices = &current_image_idx;
-	present_info.pResults = nullptr;
-
-	rt = vkQueuePresentKHR(vk_graphics_queue_, &present_info);
-	if (rt != VK_SUCCESS) {
-		printf("vkQueuePresentKHR error\n");
-		return;
-	}
-
-	rt = vkQueueWaitIdle(vk_graphics_queue_);
-	if (rt != VK_SUCCESS) {
-		printf("vkQueueWaitIdle error\n");
-		return;
-	}
 }
 
 void NormalMappingDemo::BuildCommandBuffers() {
@@ -221,33 +150,41 @@ void NormalMappingDemo::BuildCommandBuffers() {
 	}
 }
 
+void NormalMappingDemo::Update() {
+	UpdateMVPUniformBuffer();
+}
+
 void NormalMappingDemo::SetRenderMode(render_mode_t mode) {
 	render_mode_ = mode;
 	BuildCommandBuffers();
 }
 
-void NormalMappingDemo::KeyF2Down() {
-	switch (render_mode_) {
-	case render_mode_t::RM_TEXTURE:
-		SetRenderMode(render_mode_t::RM_FLAT_LIGHT);
-		break;
-	case render_mode_t::RM_FLAT_LIGHT:
-		SetRenderMode(render_mode_t::RM_NORMAL_MAPPING);
-		break;
-	case render_mode_t::RM_NORMAL_MAPPING:
-		SetRenderMode(render_mode_t::RM_TEXTURE);
-		break;
+void NormalMappingDemo::FuncKeyDown(uint32_t key) {
+	if (key == KEY_F2) {
+		switch (render_mode_) {
+		case render_mode_t::RM_TEXTURE:
+			SetRenderMode(render_mode_t::RM_FLAT_LIGHT);
+			break;
+		case render_mode_t::RM_FLAT_LIGHT:
+			SetRenderMode(render_mode_t::RM_NORMAL_MAPPING);
+			break;
+		case render_mode_t::RM_NORMAL_MAPPING:
+			SetRenderMode(render_mode_t::RM_TEXTURE);
+			break;
+		}
 	}
 }
 
 bool NormalMappingDemo::LoadTextures() {
 	if (!Load2DTexture("color.bmp", VK_FORMAT_R8G8B8A8_UNORM,
-		VK_IMAGE_USAGE_SAMPLED_BIT, texture_color_)) {
+		VK_IMAGE_USAGE_SAMPLED_BIT, 
+		vk_sampler_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture_color_)) {
 		return false;
 	}
 
 	if (!Load2DTexture("normal.bmp", VK_FORMAT_R8G8B8A8_UNORM,
-		VK_IMAGE_USAGE_SAMPLED_BIT, texture_normal_)) {
+		VK_IMAGE_USAGE_SAMPLED_BIT, 
+		vk_sampler_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture_normal_)) {
 		return false;
 	}
 
@@ -259,49 +196,24 @@ void NormalMappingDemo::FreeTextures() {
 	Destroy2DImage(texture_color_);
 }
 
-bool NormalMappingDemo::CreateSampler() {
-	VkSamplerCreateInfo create_info = {};
-
-	create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = 0;
-	create_info.magFilter = VK_FILTER_NEAREST;
-	create_info.minFilter = VK_FILTER_LINEAR;
-	create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	create_info.mipLodBias = 0.0f;
-	create_info.anisotropyEnable = VK_FALSE;
-	create_info.maxAnisotropy = 0.0f;
-	create_info.compareEnable = VK_FALSE;
-	create_info.compareOp = VK_COMPARE_OP_NEVER;
-	create_info.minLod = 0.0f;
-	create_info.maxLod = 1.0f;
-	create_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-	create_info.unnormalizedCoordinates = VK_FALSE;
-
-	return VK_SUCCESS == vkCreateSampler(vk_device_, &create_info, nullptr, &vk_sampler_);
-}
-
-void NormalMappingDemo::DestroySampler() {
-	if (vk_sampler_) {
-		vkDestroySampler(vk_device_, vk_sampler_, nullptr);
-		vk_sampler_ = VK_NULL_HANDLE;
-	}
-}
-
 bool NormalMappingDemo::CreateUniformBuffers() {
-	return CreateBuffer(uniform_buffer_mat_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_mvp_sep_s))
-		&& CreateBuffer(uniform_buffer_light_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_light_s));
+	return CreateBuffer(uniform_buffer_mat_, 
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			sizeof(ubo_mvp_sep_s))
+			&& 
+			CreateBuffer(uniform_buffer_point_light_,
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			sizeof(ubo_point_light_s));
 }
 
 void NormalMappingDemo::DestroyUniformBuffers() {
-	DestroyBuffer(uniform_buffer_light_);
+	DestroyBuffer(uniform_buffer_point_light_);
 	DestroyBuffer(uniform_buffer_mat_);
 }
 
-bool NormalMappingDemo::CreateVertexBuffer() {
+bool NormalMappingDemo::CreateWall() {
 	std::vector<vertex_pos_normal_uv_tangent_s> vertex_buffer = {
 		{ { -1.0f, 0.0f, -1.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
 		{ {  1.0f, 0.0f, -1.0f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } },
@@ -310,23 +222,11 @@ bool NormalMappingDemo::CreateVertexBuffer() {
 	};
 	uint32_t vertex_buffer_size = static_cast<uint32_t>(vertex_buffer.size()) * sizeof(vertex_pos_normal_uv_tangent_s);
 
-	if (!CreateBuffer(vertex_buffer_, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer_size)) {
-		return false;
-	}
-
-	void* data = nullptr;
-	if (VK_SUCCESS != vkMapMemory(vk_device_, vertex_buffer_.memory_, 0, vertex_buffer_.memory_size_, 0, &data)) {
-		return false;
-	}
-
-	memcpy(data, vertex_buffer.data(), vertex_buffer_size);
-
-	vkUnmapMemory(vk_device_, vertex_buffer_.memory_);
-
-	return true;
+	return CreateVertexBuffer(vertex_buffer_,
+		vertex_buffer.data(), vertex_buffer_size, true);
 }
 
-void NormalMappingDemo::DestroyVertexBuffer() {
+void NormalMappingDemo::DestroyWall() {
 	DestroyBuffer(vertex_buffer_);
 }
 
@@ -335,7 +235,10 @@ bool NormalMappingDemo::CreateIndexBuffer() {
 	uint32_t index_buffer[6] = { 0, 1, 2, 2, 3, 0 };
 	uint32_t index_buffer_size = static_cast<uint32_t>(sizeof(index_buffer));
 
-	if (!CreateBuffer(index_buffer_, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer_size)) {
+	if (!CreateBuffer(index_buffer_, 
+		VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		index_buffer_size)) {
 		return false;
 	}
 
@@ -456,7 +359,7 @@ bool NormalMappingDemo::AllocDescriptorSets() {
 	write_descriptor_sets[idx].descriptorCount = 1;
 	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	write_descriptor_sets[idx].pImageInfo = nullptr;
-	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_mat_.buffer_info_;
+	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_mat_.desc_buffer_info_;
 	write_descriptor_sets[idx].pTexelBufferView = nullptr;
 
 	idx++;
@@ -468,7 +371,7 @@ bool NormalMappingDemo::AllocDescriptorSets() {
 	write_descriptor_sets[idx].descriptorCount = 1;
 	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	write_descriptor_sets[idx].pImageInfo = nullptr;
-	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_light_.buffer_info_;
+	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_point_light_.desc_buffer_info_;
 	write_descriptor_sets[idx].pTexelBufferView = nullptr;
 
 	idx++;
@@ -492,12 +395,6 @@ bool NormalMappingDemo::AllocDescriptorSets() {
 
 	idx++;
 
-	VkDescriptorImageInfo desc_image_info_normal = {};
-
-	desc_image_info_normal.sampler = vk_sampler_;
-	desc_image_info_normal.imageView = texture_normal_.image_view_;
-	desc_image_info_normal.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
 	write_descriptor_sets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	write_descriptor_sets[idx].pNext = nullptr;
 	write_descriptor_sets[idx].dstSet = vk_descriptorset_sampler_;
@@ -505,7 +402,7 @@ bool NormalMappingDemo::AllocDescriptorSets() {
 	write_descriptor_sets[idx].dstArrayElement = 0;
 	write_descriptor_sets[idx].descriptorCount = 1;
 	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	write_descriptor_sets[idx].pImageInfo = &desc_image_info_normal;
+	write_descriptor_sets[idx].pImageInfo = &texture_normal_.desc_image_info_;
 	write_descriptor_sets[idx].pBufferInfo = nullptr;
 	write_descriptor_sets[idx].pTexelBufferView = nullptr;
 
@@ -547,672 +444,60 @@ bool NormalMappingDemo::CreatePipelineLayout() {
 }
 
 bool NormalMappingDemo::CreatePipeline_Tex() {
-	VkShaderModule vert_shader = VK_NULL_HANDLE, frag_shader = VK_NULL_HANDLE;
-
-	LoadShader("SPIR-V/tex.vert.spv", vert_shader);
-	LoadShader("SPIR-V/tex.frag.spv", frag_shader);
-
-	if (!vert_shader || !frag_shader) {
-		if (vert_shader) {
-			vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
-		}
-
-		if (frag_shader) {
-			vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
-		}
-		return false;
-	}
-
-	VkGraphicsPipelineCreateInfo create_info = {};
-
-	create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = 0;
-
-	std::array<VkPipelineShaderStageCreateInfo, 2> stages;
-
-	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[0].pNext = nullptr;
-	stages[0].flags = 0;
-	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = vert_shader;
-	stages[0].pName = "main";
-	stages[0].pSpecializationInfo = nullptr;
-
-	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].pNext = nullptr;
-	stages[1].flags = 0;
-	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[1].module = frag_shader;
-	stages[1].pName = "main";
-	stages[1].pSpecializationInfo = nullptr;
-
-	create_info.stageCount = (uint32_t)stages.size();
-	create_info.pStages = stages.data();
-
-	// -- pVertexInputState --
-
-	VkVertexInputBindingDescription vertex_binding_description = {};
-	vertex_binding_description.binding = 0;
-	vertex_binding_description.stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
-	vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-	std::array<VkVertexInputAttributeDescription, 2> vertex_attribute_descriptions;
-
-	// see vertex shader
-	vertex_attribute_descriptions[0].location = 0;
-	vertex_attribute_descriptions[0].binding = 0;
-	vertex_attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, pos_);
-
-	vertex_attribute_descriptions[1].location = 1;
-	vertex_attribute_descriptions[1].binding = 0;
-	vertex_attribute_descriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
-	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_);
-
-	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = &vertex_binding_description,
-		.vertexAttributeDescriptionCount = (uint32_t)vertex_attribute_descriptions.size(),
-		.pVertexAttributeDescriptions = vertex_attribute_descriptions.data()
+	create_pipeline_vert_frag_params_s params = {
+		.vertex_shader_filename_ = "SPIR-V/tex.vert.spv",
+		.framgment_shader_filename_ = "SPIR-V/tex.frag.spv",
+		.vertex_format_ = vertex_format_t::VF_POS_NORMAL_UV_TANGENT,
+		.instance_format_ = instance_format_t::INST_NONE,
+		.additional_vertex_fields_ = VERTEX_FIELD_UV,
+		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		.primitive_restart_enable_ = VK_FALSE,
+		.polygon_mode_ = VK_POLYGON_MODE_FILL,
+		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
+		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.pipeline_layout_ = vk_pipeline_layout_,
+		.render_pass_ = vk_render_pass_
 	};
 
-	create_info.pVertexInputState = &vertex_input_state;
-
-	// -- pInputAssemblyState --
-
-	VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-		.primitiveRestartEnable = VK_FALSE
-	};
-	create_info.pInputAssemblyState = &input_assembly_state;
-
-	// -- pTessellationState --
-	create_info.pTessellationState = nullptr;   // no tessellation
-
-	// -- pViewportState --
-	VkPipelineViewportStateCreateInfo viewport_state = {};
-
-	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewport_state.pNext = nullptr;
-	viewport_state.flags = 0;
-	viewport_state.viewportCount = 1;
-	viewport_state.pViewports = nullptr;    // overriden by dynamic state
-	viewport_state.scissorCount = 1;
-	viewport_state.pScissors = nullptr;     // overriden by dynamic state
-
-	create_info.pViewportState = &viewport_state;
-
-	// -- pRasterizationState --
-	VkPipelineRasterizationStateCreateInfo rasterization_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.depthClampEnable = VK_FALSE,
-		.rasterizerDiscardEnable = VK_FALSE,
-		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
-		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-		.depthBiasEnable = VK_FALSE,
-		.depthBiasConstantFactor = 0.0f,
-		.depthBiasClamp = 0.0f,
-		.depthBiasSlopeFactor = 0.0f,
-		.lineWidth = 1.0f
-	};
-
-	create_info.pRasterizationState = &rasterization_state;
-
-	// -- pMultisampleState --
-	VkPipelineMultisampleStateCreateInfo multisample_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-		.sampleShadingEnable = VK_FALSE,
-		.minSampleShading = 0.0f,
-		.pSampleMask = nullptr,
-		.alphaToCoverageEnable = VK_FALSE,
-		.alphaToOneEnable = VK_FALSE
-	};
-
-	create_info.pMultisampleState = &multisample_state;
-
-	// -- pDepthStencilState --
-
-	VkStencilOpState stencil_op_state = {
-		.failOp = VK_STENCIL_OP_KEEP,
-		.passOp = VK_STENCIL_OP_KEEP,
-		.compareOp = VK_COMPARE_OP_ALWAYS,
-		.compareMask = 0,
-		.writeMask = 0,
-		.reference = 0
-	};
-
-	VkPipelineDepthStencilStateCreateInfo depthstencil_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.depthTestEnable = VK_TRUE,
-		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-		.depthBoundsTestEnable = VK_FALSE,
-		.stencilTestEnable = VK_FALSE,
-		.front = stencil_op_state,
-		.back = stencil_op_state,
-		.minDepthBounds = 0.0,
-		.maxDepthBounds = 1.0
-	};
-
-	create_info.pDepthStencilState = &depthstencil_state;
-
-	// -- pColorBlendState --
-	VkPipelineColorBlendStateCreateInfo color_blend_state = {};
-
-	VkPipelineColorBlendAttachmentState blend_attr_attachment = {};
-	blend_attr_attachment.colorWriteMask = 0xf;
-	blend_attr_attachment.blendEnable = VK_FALSE;
-
-	color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	color_blend_state.pNext = nullptr;
-	color_blend_state.flags = 0;
-	color_blend_state.logicOpEnable = VK_FALSE;
-	color_blend_state.logicOp = VK_LOGIC_OP_COPY;
-	color_blend_state.attachmentCount = 1;
-	color_blend_state.pAttachments = &blend_attr_attachment;
-
-	create_info.pColorBlendState = &color_blend_state;
-
-	// -- pDynamicState --
-
-	VkPipelineDynamicStateCreateInfo dynamic_state = {};
-
-	std::vector<VkDynamicState> dynamic_state_enables;
-	dynamic_state_enables.push_back(VK_DYNAMIC_STATE_VIEWPORT);
-	dynamic_state_enables.push_back(VK_DYNAMIC_STATE_SCISSOR);
-
-	dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamic_state.pNext = nullptr;
-	dynamic_state.flags = 0;
-	dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_state_enables.size());
-	dynamic_state.pDynamicStates = dynamic_state_enables.data();
-
-	create_info.pDynamicState = &dynamic_state;
-
-	create_info.layout = vk_pipeline_layout_;
-	create_info.renderPass = vk_render_pass_;
-
-	create_info.subpass = 0;
-	create_info.basePipelineHandle = VK_NULL_HANDLE;
-	create_info.basePipelineIndex = 0;
-
-	VkResult rt = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
-		1, &create_info, nullptr, &vk_pipeline_tex_);
-
-	// free shader modules
-	vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
-	vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
-
-	return rt == VK_SUCCESS;
+	return CreatePipelineVertFrag(params, vk_pipeline_tex_);
 }
 
 bool NormalMappingDemo::CreatePipeline_Flat() {
-	VkShaderModule vert_shader = VK_NULL_HANDLE, frag_shader = VK_NULL_HANDLE;
-
-	LoadShader("SPIR-V/flat.vert.spv", vert_shader);
-	LoadShader("SPIR-V/flat.frag.spv", frag_shader);
-
-	if (!vert_shader || !frag_shader) {
-		if (vert_shader) {
-			vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
-		}
-
-		if (frag_shader) {
-			vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
-		}
-		return false;
-	}
-
-	VkGraphicsPipelineCreateInfo create_info = {};
-
-	create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = 0;
-
-	std::array<VkPipelineShaderStageCreateInfo, 2> stages;
-
-	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[0].pNext = nullptr;
-	stages[0].flags = 0;
-	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = vert_shader;
-	stages[0].pName = "main";
-	stages[0].pSpecializationInfo = nullptr;
-
-	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].pNext = nullptr;
-	stages[1].flags = 0;
-	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[1].module = frag_shader;
-	stages[1].pName = "main";
-	stages[1].pSpecializationInfo = nullptr;
-
-	create_info.stageCount = (uint32_t)stages.size();
-	create_info.pStages = stages.data();
-
-	// -- pVertexInputState --
-
-	VkVertexInputBindingDescription vertex_binding_description = {};
-	vertex_binding_description.binding = 0;
-	vertex_binding_description.stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
-	vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-	std::array<VkVertexInputAttributeDescription, 3> vertex_attribute_descriptions;
-
-	// see vertex shader
-
-	// pos
-	vertex_attribute_descriptions[0].location = 0;
-	vertex_attribute_descriptions[0].binding = 0;
-	vertex_attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, pos_);
-
-	// normal
-	vertex_attribute_descriptions[1].location = 1;
-	vertex_attribute_descriptions[1].binding = 0;
-	vertex_attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, normal_);
-
-	// uv
-	vertex_attribute_descriptions[2].location = 2;
-	vertex_attribute_descriptions[2].binding = 0;
-	vertex_attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-	vertex_attribute_descriptions[2].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_);
-
-	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = &vertex_binding_description,
-		.vertexAttributeDescriptionCount = (uint32_t)vertex_attribute_descriptions.size(),
-		.pVertexAttributeDescriptions = vertex_attribute_descriptions.data()
+	create_pipeline_vert_frag_params_s params = {
+		.vertex_shader_filename_ = "SPIR-V/flat.vert.spv",
+		.framgment_shader_filename_ = "SPIR-V/flat.frag.spv",
+		.vertex_format_ = vertex_format_t::VF_POS_NORMAL_UV_TANGENT,
+		.instance_format_ = instance_format_t::INST_NONE,
+		.additional_vertex_fields_ = VERTEX_FIELD_NORMAL | VERTEX_FIELD_UV,
+		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		.primitive_restart_enable_ = VK_FALSE,
+		.polygon_mode_ = VK_POLYGON_MODE_FILL,
+		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
+		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.pipeline_layout_ = vk_pipeline_layout_,
+		.render_pass_ = vk_render_pass_
 	};
 
-	create_info.pVertexInputState = &vertex_input_state;
-
-	// -- pInputAssemblyState --
-
-	VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-		.primitiveRestartEnable = VK_FALSE
-	};
-	create_info.pInputAssemblyState = &input_assembly_state;
-
-	// -- pTessellationState --
-	create_info.pTessellationState = nullptr;   // no tessellation
-
-	// -- pViewportState --
-	VkPipelineViewportStateCreateInfo viewport_state = {};
-
-	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewport_state.pNext = nullptr;
-	viewport_state.flags = 0;
-	viewport_state.viewportCount = 1;
-	viewport_state.pViewports = nullptr;    // overriden by dynamic state
-	viewport_state.scissorCount = 1;
-	viewport_state.pScissors = nullptr;     // overriden by dynamic state
-
-	create_info.pViewportState = &viewport_state;
-
-	// -- pRasterizationState --
-	VkPipelineRasterizationStateCreateInfo rasterization_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.depthClampEnable = VK_FALSE,
-		.rasterizerDiscardEnable = VK_FALSE,
-		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
-		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-		.depthBiasEnable = VK_FALSE,
-		.depthBiasConstantFactor = 0.0f,
-		.depthBiasClamp = 0.0f,
-		.depthBiasSlopeFactor = 0.0f,
-		.lineWidth = 1.0f
-	};
-
-	create_info.pRasterizationState = &rasterization_state;
-
-	// -- pMultisampleState --
-	VkPipelineMultisampleStateCreateInfo multisample_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-		.sampleShadingEnable = VK_FALSE,
-		.minSampleShading = 0.0f,
-		.pSampleMask = nullptr,
-		.alphaToCoverageEnable = VK_FALSE,
-		.alphaToOneEnable = VK_FALSE
-	};
-
-	create_info.pMultisampleState = &multisample_state;
-
-	// -- pDepthStencilState --
-
-	VkStencilOpState stencil_op_state = {
-		.failOp = VK_STENCIL_OP_KEEP,
-		.passOp = VK_STENCIL_OP_KEEP,
-		.compareOp = VK_COMPARE_OP_ALWAYS,
-		.compareMask = 0,
-		.writeMask = 0,
-		.reference = 0
-	};
-
-	VkPipelineDepthStencilStateCreateInfo depthstencil_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.depthTestEnable = VK_TRUE,
-		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-		.depthBoundsTestEnable = VK_FALSE,
-		.stencilTestEnable = VK_FALSE,
-		.front = stencil_op_state,
-		.back = stencil_op_state,
-		.minDepthBounds = 0.0,
-		.maxDepthBounds = 1.0
-	};
-
-	create_info.pDepthStencilState = &depthstencil_state;
-
-	// -- pColorBlendState --
-	VkPipelineColorBlendStateCreateInfo color_blend_state = {};
-
-	VkPipelineColorBlendAttachmentState blend_attr_attachment = {};
-	blend_attr_attachment.colorWriteMask = 0xf;
-	blend_attr_attachment.blendEnable = VK_FALSE;
-
-	color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	color_blend_state.pNext = nullptr;
-	color_blend_state.flags = 0;
-	color_blend_state.logicOpEnable = VK_FALSE;
-	color_blend_state.logicOp = VK_LOGIC_OP_COPY;
-	color_blend_state.attachmentCount = 1;
-	color_blend_state.pAttachments = &blend_attr_attachment;
-
-	create_info.pColorBlendState = &color_blend_state;
-
-	// -- pDynamicState --
-
-	VkPipelineDynamicStateCreateInfo dynamic_state = {};
-
-	std::vector<VkDynamicState> dynamic_state_enables;
-	dynamic_state_enables.push_back(VK_DYNAMIC_STATE_VIEWPORT);
-	dynamic_state_enables.push_back(VK_DYNAMIC_STATE_SCISSOR);
-
-	dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamic_state.pNext = nullptr;
-	dynamic_state.flags = 0;
-	dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_state_enables.size());
-	dynamic_state.pDynamicStates = dynamic_state_enables.data();
-
-	create_info.pDynamicState = &dynamic_state;
-
-	create_info.layout = vk_pipeline_layout_;
-	create_info.renderPass = vk_render_pass_;
-
-	create_info.subpass = 0;
-	create_info.basePipelineHandle = VK_NULL_HANDLE;
-	create_info.basePipelineIndex = 0;
-
-	VkResult rt = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
-		1, &create_info, nullptr, &vk_pipeline_flat_);
-
-	// free shader modules
-	vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
-	vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
-
-	return rt == VK_SUCCESS;
+	return CreatePipelineVertFrag(params, vk_pipeline_flat_);
 }
 
 bool NormalMappingDemo::CreatePipeline_NormalMapping() {
-	VkShaderModule vert_shader = VK_NULL_HANDLE, frag_shader = VK_NULL_HANDLE;
-
-	LoadShader("SPIR-V/normal_mapping.vert.spv", vert_shader);
-	LoadShader("SPIR-V/normal_mapping.frag.spv", frag_shader);
-
-	if (!vert_shader || !frag_shader) {
-		if (vert_shader) {
-			vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
-		}
-
-		if (frag_shader) {
-			vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
-		}
-		return false;
-	}
-
-	VkGraphicsPipelineCreateInfo create_info = {};
-
-	create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	create_info.pNext = nullptr;
-	create_info.flags = 0;
-
-	std::array<VkPipelineShaderStageCreateInfo, 2> stages;
-
-	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[0].pNext = nullptr;
-	stages[0].flags = 0;
-	stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-	stages[0].module = vert_shader;
-	stages[0].pName = "main";
-	stages[0].pSpecializationInfo = nullptr;
-
-	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].pNext = nullptr;
-	stages[1].flags = 0;
-	stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	stages[1].module = frag_shader;
-	stages[1].pName = "main";
-	stages[1].pSpecializationInfo = nullptr;
-
-	create_info.stageCount = (uint32_t)stages.size();
-	create_info.pStages = stages.data();
-
-	// -- pVertexInputState --
-
-	VkVertexInputBindingDescription vertex_binding_description = {};
-	vertex_binding_description.binding = 0;
-	vertex_binding_description.stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
-	vertex_binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-	std::array<VkVertexInputAttributeDescription, 4> vertex_attribute_descriptions;
-
-	// see vertex shader
-
-	// pos
-	vertex_attribute_descriptions[0].location = 0;
-	vertex_attribute_descriptions[0].binding = 0;
-	vertex_attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[0].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, pos_);
-
-	// normal
-	vertex_attribute_descriptions[1].location = 1;
-	vertex_attribute_descriptions[1].binding = 0;
-	vertex_attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[1].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, normal_);
-
-	// uv
-	vertex_attribute_descriptions[2].location = 2;
-	vertex_attribute_descriptions[2].binding = 0;
-	vertex_attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-	vertex_attribute_descriptions[2].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_);
-
-	// tangent
-	vertex_attribute_descriptions[3].location = 3;
-	vertex_attribute_descriptions[3].binding = 0;
-	vertex_attribute_descriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
-	vertex_attribute_descriptions[3].offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, tangent_);
-
-	VkPipelineVertexInputStateCreateInfo vertex_input_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = &vertex_binding_description,
-		.vertexAttributeDescriptionCount = (uint32_t)vertex_attribute_descriptions.size(),
-		.pVertexAttributeDescriptions = vertex_attribute_descriptions.data()
+	create_pipeline_vert_frag_params_s params = {
+		.vertex_shader_filename_ = "SPIR-V/normal_mapping.vert.spv",
+		.framgment_shader_filename_ = "SPIR-V/normal_mapping.frag.spv",
+		.vertex_format_ = vertex_format_t::VF_POS_NORMAL_UV_TANGENT,
+		.instance_format_ = instance_format_t::INST_NONE,
+		.additional_vertex_fields_ = VERTEX_FIELD_ALL,
+		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		.primitive_restart_enable_ = VK_FALSE,
+		.polygon_mode_ = VK_POLYGON_MODE_FILL,
+		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
+		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.pipeline_layout_ = vk_pipeline_layout_,
+		.render_pass_ = vk_render_pass_
 	};
 
-	create_info.pVertexInputState = &vertex_input_state;
-
-	// -- pInputAssemblyState --
-
-	VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-		.primitiveRestartEnable = VK_FALSE
-	};
-	create_info.pInputAssemblyState = &input_assembly_state;
-
-	// -- pTessellationState --
-	create_info.pTessellationState = nullptr;   // no tessellation
-
-	// -- pViewportState --
-	VkPipelineViewportStateCreateInfo viewport_state = {};
-
-	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewport_state.pNext = nullptr;
-	viewport_state.flags = 0;
-	viewport_state.viewportCount = 1;
-	viewport_state.pViewports = nullptr;    // overriden by dynamic state
-	viewport_state.scissorCount = 1;
-	viewport_state.pScissors = nullptr;     // overriden by dynamic state
-
-	create_info.pViewportState = &viewport_state;
-
-	// -- pRasterizationState --
-	VkPipelineRasterizationStateCreateInfo rasterization_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.depthClampEnable = VK_FALSE,
-		.rasterizerDiscardEnable = VK_FALSE,
-		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
-		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-		.depthBiasEnable = VK_FALSE,
-		.depthBiasConstantFactor = 0.0f,
-		.depthBiasClamp = 0.0f,
-		.depthBiasSlopeFactor = 0.0f,
-		.lineWidth = 1.0f
-	};
-
-	create_info.pRasterizationState = &rasterization_state;
-
-	// -- pMultisampleState --
-	VkPipelineMultisampleStateCreateInfo multisample_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-		.sampleShadingEnable = VK_FALSE,
-		.minSampleShading = 0.0f,
-		.pSampleMask = nullptr,
-		.alphaToCoverageEnable = VK_FALSE,
-		.alphaToOneEnable = VK_FALSE
-	};
-
-	create_info.pMultisampleState = &multisample_state;
-
-	// -- pDepthStencilState --
-
-	VkStencilOpState stencil_op_state = {
-		.failOp = VK_STENCIL_OP_KEEP,
-		.passOp = VK_STENCIL_OP_KEEP,
-		.compareOp = VK_COMPARE_OP_ALWAYS,
-		.compareMask = 0,
-		.writeMask = 0,
-		.reference = 0
-	};
-
-	VkPipelineDepthStencilStateCreateInfo depthstencil_state = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-		.depthTestEnable = VK_TRUE,
-		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
-		.depthBoundsTestEnable = VK_FALSE,
-		.stencilTestEnable = VK_FALSE,
-		.front = stencil_op_state,
-		.back = stencil_op_state,
-		.minDepthBounds = 0.0,
-		.maxDepthBounds = 1.0
-	};
-
-	create_info.pDepthStencilState = &depthstencil_state;
-
-	// -- pColorBlendState --
-	VkPipelineColorBlendStateCreateInfo color_blend_state = {};
-
-	VkPipelineColorBlendAttachmentState blend_attr_attachment = {};
-	blend_attr_attachment.colorWriteMask = 0xf;
-	blend_attr_attachment.blendEnable = VK_FALSE;
-
-	color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-	color_blend_state.pNext = nullptr;
-	color_blend_state.flags = 0;
-	color_blend_state.logicOpEnable = VK_FALSE;
-	color_blend_state.logicOp = VK_LOGIC_OP_COPY;
-	color_blend_state.attachmentCount = 1;
-	color_blend_state.pAttachments = &blend_attr_attachment;
-
-	create_info.pColorBlendState = &color_blend_state;
-
-	// -- pDynamicState --
-
-	VkPipelineDynamicStateCreateInfo dynamic_state = {};
-
-	std::vector<VkDynamicState> dynamic_state_enables;
-	dynamic_state_enables.push_back(VK_DYNAMIC_STATE_VIEWPORT);
-	dynamic_state_enables.push_back(VK_DYNAMIC_STATE_SCISSOR);
-
-	dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamic_state.pNext = nullptr;
-	dynamic_state.flags = 0;
-	dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_state_enables.size());
-	dynamic_state.pDynamicStates = dynamic_state_enables.data();
-
-	create_info.pDynamicState = &dynamic_state;
-
-	create_info.layout = vk_pipeline_layout_;
-	create_info.renderPass = vk_render_pass_;
-
-	create_info.subpass = 0;
-	create_info.basePipelineHandle = VK_NULL_HANDLE;
-	create_info.basePipelineIndex = 0;
-
-	VkResult rt = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
-		1, &create_info, nullptr, &vk_pipeline_normal_mapping_);
-
-	// free shader modules
-	vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
-	vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
-
-	return rt == VK_SUCCESS;
+	return CreatePipelineVertFrag(params, vk_pipeline_normal_mapping_);
 }
 
 // build command buffer
@@ -1312,14 +597,14 @@ void NormalMappingDemo::UpdateMVPUniformBuffer() {
 }
 
 void NormalMappingDemo::SetupLightUniformBuffer() {
-	ubo_light_s ubo_light = {};
+	ubo_point_light_s ubo_point_light = {};
 
 	// point light
-	ubo_light.pos_ = glm::vec4(2.0f, -2.0f, 2.0f, 1.0f);
-	ubo_light.color_ = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-	ubo_light.radius_ = 10.0f;
+	ubo_point_light.pos_ = glm::vec4(2.0f, -2.0f, 2.0f, 1.0f);
+	ubo_point_light.color_ = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+	ubo_point_light.radius_ = 10.0f;
 
-	UpdateBuffer(uniform_buffer_light_, &ubo_light, sizeof(ubo_light));
+	UpdateBuffer(uniform_buffer_point_light_, &ubo_point_light, sizeof(ubo_point_light));
 }
 
 /*

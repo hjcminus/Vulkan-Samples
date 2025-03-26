@@ -16,8 +16,8 @@ public:
 
 	bool					Init();
 	void					Shutdown();
-	void					Display() override;
 	void					BuildCommandBuffers() override;
+	void					Update() override;
 
 private:
 
@@ -39,8 +39,8 @@ private:
 	void					DestroyUniformBuffer();
 
 	// vertex buffer
-	bool					CreateVertexBuffer();
-	void					DestroyVertexBuffer();
+	bool					CreateTriangle();
+	void					DestroyTriangle();
 
 	// descriptor set layout
 	bool					CreateDescriptorSetLayout();

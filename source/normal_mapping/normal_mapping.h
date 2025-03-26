@@ -19,8 +19,8 @@ public:
 
 	bool					Init();
 	void					Shutdown();
-	void					Display() override;
 	void					BuildCommandBuffers() override;
+	void					Update() override;
 
 private:
 
@@ -37,7 +37,7 @@ private:
 	vk_image_s				texture_normal_;
 
 	vk_buffer_s				uniform_buffer_mat_;
-	vk_buffer_s				uniform_buffer_light_;
+	vk_buffer_s				uniform_buffer_point_light_;
 	vk_buffer_s				vertex_buffer_;
 	vk_buffer_s				index_buffer_;
 	uint32_t				index_count_;
@@ -60,20 +60,17 @@ private:
 
 	void					SetRenderMode(render_mode_t mode);
 
-	void					KeyF2Down() override;
+	void					FuncKeyDown(uint32_t key) override;
 
 	bool					LoadTextures();
 	void					FreeTextures();
-
-	bool					CreateSampler();
-	void					DestroySampler();
 
 	bool					CreateUniformBuffers();
 	void					DestroyUniformBuffers();
 
 	// vertex buffer
-	bool					CreateVertexBuffer();
-	void					DestroyVertexBuffer();
+	bool					CreateWall();
+	void					DestroyWall();
 
 	// index buffer
 	bool					CreateIndexBuffer();

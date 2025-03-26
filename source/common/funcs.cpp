@@ -3,6 +3,9 @@
  *****************************************************************************/
 
 #include "inc.h"
+#include <pnglibconf.h>
+#include <png.h>
+#include <atomic>
 
 /*
 ================================================================================
@@ -75,7 +78,7 @@ static bool IsDirectorySeparator(wchar_t c) {
 	return c == L'\\' || c == L'/';
 }
 
-bool Str_ExtractFileDirSelf(wchar_t * path) {
+static bool Str_ExtractFileDirSelf(wchar_t * path) {
 	int l = (int)wcslen(path);
 	for (int i = l - 1; i >= 0; --i) {
 		if (IsDirectorySeparator(path[i])) {
@@ -99,6 +102,9 @@ void Common_Init() {
 
 	Str_UTF16ToUTF8((const char16_t*)buffer, g_data_folder, MAX_PATH);
 #endif
+
+	// randomize
+	SRand((unsigned)time(NULL));
 }
 
 COMMON_API const char * GetDataFolder() {
@@ -118,6 +124,37 @@ COMMON_API bool IsBigEndian() {
 	foo.b2_ = 0;
 
 	return foo.u16_ != 1;
+}
+
+/*
+================================================================================
+random number generator
+================================================================================
+*/
+static std::atomic<uint32_t> g_rand_next = 1;
+
+COMMON_API void SRand(uint32_t seed) {
+	g_rand_next.store(seed);
+}
+
+static const uint32_t RAND_MAX_VALUE = 32767;
+
+COMMON_API uint32_t Rand() {
+	uint32_t next = g_rand_next.load();
+	next = next * 1103515245 + 12345;
+	g_rand_next.store(next);
+	return next / 65536 % 32768;
+}
+
+// return [0, 1]
+COMMON_API float Rand01() {
+	return Rand() / (float)RAND_MAX_VALUE;
+}
+
+// return [-1, 1]
+COMMON_API float RandNeg1Pos1() {
+	float f = Rand() / (float)RAND_MAX_VALUE;
+	return f * 2.0f - 1.0f;
 }
 
 /*
@@ -228,6 +265,22 @@ COMMON_API void File_FreeText(char* data) {
 string
 ================================================================================
 */
+COMMON_API void Str_Copy(char* dst, int dst_cap, const char* src) {
+	if (dst == src) {
+		return;
+	}
+
+#if defined(_MSC_VER)
+	strncpy_s(dst, dst_cap, src, _TRUNCATE);
+#endif
+
+#if defined(__GNUC__)
+	strncpy(dst, src, dst_cap - 1);
+	size_t l = strlen(dst);
+	dst[l] = 0;
+#endif
+}
+
 COMMON_API int Str_ICmp(const char* s1, const char* s2) {
 #if defined(_MSC_VER)
 	return _stricmp(s1, s2);
@@ -590,6 +643,274 @@ COMMON_API int Str_UTF32ToUTF8(const char32_t* utf32, char* utf8, int utf8_bytes
 #endif
 }
 
+COMMON_API char* Str_SkipWhiteSpace(char* pc) {
+	while (*pc && (*pc == ' ' || *pc == '\t' || *pc == '\r' || *pc == '\n')) {
+		pc++;
+	}
+	return pc;
+}
+
+COMMON_API char* Str_SkipCharactor(char* pc) {
+	while (*pc && *pc != ' ' && *pc != '\t' && *pc != '\r' && *pc != '\n') {
+		pc++;
+	}
+	return pc;
+}
+
+COMMON_API bool Str_ExtractFileDir(const char* path, char* dir, int dir_cap) {
+	dir[0] = 0;
+	int l = (int)strlen(path);
+	for (int i = l - 1; i >= 0; --i) {
+		if (IsDirectorySeparator(path[i])) {
+			int filedir_element_count = i;
+			if (dir_cap <= filedir_element_count) {
+				printf("dir buffer overflow\n");
+				return false;
+			}
+			memcpy(dir, path, filedir_element_count * sizeof(char));
+			dir[filedir_element_count] = 0;
+			return true;
+		}
+	}
+	// directory separator not found
+	return false;
+}
+
+COMMON_API bool Str_ExtractFileName(const char* path, char* filename, int filename_cap) {
+	filename[0] = 0;
+	int l = (int)strlen(path);
+	for (int i = l - 1; i >= 0; --i) {
+		if (IsDirectorySeparator(path[i])) {
+			int filename_element_count = l - i - 1;
+			if (filename_cap <= filename_element_count) {
+				printf("Filename buffer overflow\n");
+				return false;
+			}
+			memcpy(filename, path + i + 1, filename_element_count);
+			filename[filename_element_count] = 0;
+			return true;
+		}
+	}
+
+	// no \ or / character been found
+	if (filename_cap <= l) {
+		printf("filename buffer overflow\n");
+		return false;
+	}
+
+	Str_Copy(filename, filename_cap, path);
+	return true;
+}
+
+// return number tokens
+
+COMMON_API int Str_Tokenize(const char* s, char** buffers, int each_buffer_size, int buffer_count) {
+	char local_buffer[1024];
+	char * copy_s = local_buffer;
+
+	int s_len = (int)strlen(s);
+	if (s_len >= 1024) {
+		copy_s = (char*)TEMP_ALLOC(s_len + 1);
+	}
+
+	if (!copy_s) {
+		printf("Could not allocate memory to copy source string\n");
+		return 0;
+	}
+
+	memcpy(copy_s, s, s_len);
+	copy_s[s_len] = 0;
+
+	for (int i = 0; i < buffer_count; ++i) {
+		buffers[i][0] = 0;
+	}
+
+	int token_count = 0;
+	char * pc = copy_s;
+	while (*pc) {
+		pc = Str_SkipWhiteSpace(pc);
+		if (!*pc) {
+			break;
+		}
+
+		char* first = pc;
+		pc = Str_SkipCharactor(pc);
+
+		if (!*pc) {
+			Str_Copy(buffers[token_count++], each_buffer_size, first);
+			if (token_count >= buffer_count) {
+				break;
+			}
+			break;
+		}
+		else {
+			*pc = 0;
+			Str_Copy(buffers[token_count++], each_buffer_size, first);
+			if (token_count >= buffer_count) {
+				break;
+			}
+			pc++;
+		}
+	}
+
+	if (copy_s != local_buffer) {
+		TEMP_FREE(copy_s);
+	}
+
+	return token_count;
+}
+
+COMMON_API int Str_Split(char* s, char delimiter, char** items, int max_item) {
+	int item_count = 0;
+	char* pc = s;
+
+	while (item_count < max_item) {
+		if (delimiter) {
+			items[item_count++] = pc;
+
+			char* comma = strchr(pc, delimiter);
+			if (comma) {
+				*comma = 0;
+				pc = comma + 1;
+			}
+			else {
+				break;
+			}
+		}
+		else {
+			pc = Str_SkipWhiteSpace(pc);
+
+			if (*pc) {
+				items[item_count++] = pc;
+			}
+
+			while (*pc && *pc != ' ' && *pc != '\t') {
+				pc++;
+			}
+
+			if (*pc == 0) {
+				break;
+			}
+			else {
+				*pc = 0;
+				pc++;
+			}
+		}
+	}
+
+	return item_count;
+}
+
+/*
+================================================================================
+Lexer
+================================================================================
+*/
+Lexer::Lexer() : s_(nullptr), pc_(nullptr)
+{
+	buffer_[0] = '\0';
+}
+
+Lexer::~Lexer() {
+	// do nothing
+}
+
+void Lexer::SetPtr(const char * s) {
+	s_ = s;
+	pc_ = s;
+}
+
+const char * Lexer::GetToken() {
+	if (!pc_) {
+		return nullptr;
+	}
+
+	// skip white char
+	char c = *pc_;
+	while (c && (c == 32 || c == 9 || c == 13 || c == 10)) { // space, table, return, new line
+		pc_++;
+		c = *pc_;
+	}
+
+	if (!c) {
+		return nullptr;
+	}
+
+	int token_len = 0;
+	while (c && c != 32 && c != 9 && c != 13 && c != 10) {
+		if (token_len >= MAX_TOKEN_LEN) {
+			printf("Token too long\n");
+			return nullptr;
+		}
+
+		buffer_[token_len++] = c;
+		pc_++;
+		c = *pc_;
+	}
+
+	buffer_[token_len] = 0;
+	return buffer_;
+}
+
+void Lexer::SkipLine() {
+	if (!pc_) {
+		return;
+	}
+
+	while (*pc_) {
+		if (*pc_ == 13) {
+			pc_++;
+			if (*pc_ == 10) {
+				pc_++;
+			}
+			break;
+		}
+		else if (*pc_ == 10) {
+			pc_++;
+			break;
+		}
+		else {
+			pc_++;
+		}
+	}
+}
+
+const char * Lexer::ReadLine() {
+	if (!pc_) {
+		return nullptr;
+	}
+
+	if (!*pc_) {
+		return nullptr;
+	}
+
+	int line_len = 0;
+	char c = *pc_;
+	while (c && c != 13 && c != 10) {
+		if (line_len >= MAX_TOKEN_LEN) {
+			printf("Line too long\n");
+			return nullptr;
+		}
+		buffer_[line_len++] = c;
+		pc_++;
+		c = *pc_;
+	}
+
+	buffer_[line_len] = 0;
+
+	if (*pc_) {
+		if (*pc_ == 13) {
+			pc_++;
+		}
+		if (*pc_ == 10) {
+			pc_++;
+		}
+	}
+
+	return buffer_;
+}
+
+
 /*
 ================================================================================
 color
@@ -727,7 +1048,16 @@ image
 */
 
 static bool Image_LoadBMP(const char* filename, image_s& image);
+static bool Image_LoadPNG(const char* filename, image_s& image);
+static bool Image_LoadTGA(const char* filename, image_s& image);
 
+COMMON_API bool Img_Create(int width, int height, image_s& image) {
+	image.width_ = width;
+	image.height_ = height;
+	image.pixels_ = (byte_t*)TEMP_ALLOC(width * height * 4);
+
+	return image.pixels_ != nullptr;
+}
 
 COMMON_API bool Img_Load(const char* filename, image_s& image) {
 	const char * ext = strrchr(filename, '.');
@@ -736,8 +1066,36 @@ COMMON_API bool Img_Load(const char* filename, image_s& image) {
 		return false;
 	}
 
-	if (Str_ICmp(ext + 1, "bmp") == 0) {
+	if (Str_ICmp(ext, ".bmp") == 0) {
 		return Image_LoadBMP(filename, image);
+	}
+	else if (Str_ICmp(ext, ".png") == 0) {
+		return Image_LoadPNG(filename, image);
+	}
+	else if (Str_ICmp(ext, ".tga") == 0) {
+		return Image_LoadTGA(filename, image);
+	}
+	else {
+		printf("Unsupported image file format %s.\n", ext + 1);
+		return false;
+	}
+}
+
+static bool Image_SaveBMP(const char* filename, const image_s& image);
+static bool Image_SavePNG(const char* filename, const image_s& image);
+
+COMMON_API bool Img_Save(const char* filename, const image_s& image) {
+	const char* ext = strrchr(filename, '.');
+	if (!ext) {
+		printf("Could not get filename extension.\n");
+		return false;
+	}
+
+	if (Str_ICmp(ext, ".bmp") == 0) {
+		return Image_SaveBMP(filename, image);
+	}
+	else if (Str_ICmp(ext, ".png") == 0) {
+		return Image_SavePNG(filename, image);
 	}
 	else {
 		printf("Unsupported image file format %s.\n", ext + 1);
@@ -757,7 +1115,7 @@ COMMON_API void Img_Free(image_s& image) {
 #pragma pack(push, 1)
 
 struct bmpfilehead_s {
-	word_t				bfType_;
+	word_t				bfType;
 	dword_t				bfSize;
 	word_t				bfReserved1;
 	word_t				bfReserved2;
@@ -1089,6 +1447,652 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 	return true;
 }
 
+static bool Image_LoadPNG(const char* filename, image_s& image) {
+	memset(&image, 0, sizeof(image));
+
+	bool result = false;
+
+	png_image image_png;
+	memset(&image_png, 0, sizeof(image_png));
+	image_png.version = PNG_IMAGE_VERSION;
+
+	if (png_image_begin_read_from_file(&image_png, filename)) {
+		png_bytep buffer_png;
+
+		image_png.format = PNG_FORMAT_RGBA;
+		size_t size = PNG_IMAGE_SIZE(image_png); // get image size
+		buffer_png = (png_bytep)TEMP_ALLOC(size);
+
+		if (png_image_finish_read(&image_png, NULL /*background*/, buffer_png, 0 /*row_stride*/, NULL /*colormap*/)) {
+			// test write to bmp
+
+			image.width_ = (int)image_png.width;
+			image.height_ = (int)image_png.height;
+			image.pixels_ = (byte_t*)TEMP_ALLOC(image_png.height * image_png.width * 4 /* rgba */);
+
+			if (image.pixels_) {
+				// revert y
+				for (int y = 0; y < (int)image_png.height; ++y) {
+					byte_t* src_line = buffer_png + (image_png.height - y - 1) * image_png.width * 4;
+					byte_t* dst_line = image.pixels_ + y * image_png.width * 4;
+					memcpy(dst_line, src_line, image_png.width * 4);
+				}
+
+				result = true;
+
+			}
+			else {
+				printf("Could not allocate memory to load image \"%s\"\n", filename);
+			}
+		}
+		else {
+			printf("png_image_finish_read failed\n");
+		}
+
+		png_image_free(&image_png); //2017-01-20 Fri.
+
+		TEMP_FREE(buffer_png);
+		buffer_png = nullptr;
+	}
+	else {
+		printf("png_image_begin_read_from_file failed\n");
+	}
+
+	return result;
+}
+
+static bool Image_HasAlpha(const image_s& image);
+
+static bool Image_LoadTGA(const char* filename, image_s& image) {
+	static const byte_t IMAGE_TYPE_UNCOMPRESSED_TRUE_COLOR = 2;
+	static const byte_t IMAGE_TYPE_RUN_LENGTH_TRUE_COLOR = 10;
+
+#pragma pack(push, 1)
+	struct head_t {
+		byte_t	id_length;
+		byte_t	colormap_type;
+		byte_t	image_type;
+		word_t	colormap_index;
+		word_t	colormap_length;
+		byte_t	colormap_size;
+		word_t	x_origin;
+		word_t	y_origin;
+		word_t	width;
+		word_t	height;
+		byte_t	pixel_size;
+		byte_t	attributes;
+	};
+#pragma pack(pop)
+
+	struct stream_t {
+		byte_t*	data;
+		int		pos;
+		byte_t	GetByte() { return data[pos++]; }
+	};
+
+	memset(&image, 0, sizeof(image));
+
+	void* buffer = nullptr;
+	int32_t file_size = 0;
+	if (!File_LoadBinary32(filename, buffer, file_size)) {
+		printf("Failed to load file \"%s\".\n", filename);
+		return false;
+	}
+
+	head_t* head = (head_t*)buffer;
+	byte_t a = head->attributes & (1 << 5); // 0: left-bottom is origin, 1: left-top is origin
+	if (a != 0 || (head->image_type != IMAGE_TYPE_UNCOMPRESSED_TRUE_COLOR && head->image_type != IMAGE_TYPE_RUN_LENGTH_TRUE_COLOR)) {
+		File_FreeBinary(buffer);
+		printf("Unsupported tga image type\n");
+		return false;
+	}
+
+	if (head->colormap_type != 0 || (head->pixel_size != 24 && head->pixel_size != 32)) {
+		File_FreeBinary(buffer);
+		printf("Unsupported tga pixel size\n");
+		return false;
+	}
+
+	int columns = head->width;
+	int rows = head->height;
+	int numpixels = columns * rows;
+
+	//setup reading stream
+	stream_t stream;
+	stream.data = (byte_t*)buffer;
+	stream.pos = sizeof(*head);
+
+	byte_t * targa_rgba = (byte_t*)TEMP_ALLOC(numpixels * 4); // destination rgba data
+	stream.pos += head->id_length; // skip TARGA image comment
+
+	if (IMAGE_TYPE_UNCOMPRESSED_TRUE_COLOR == head->image_type) {
+		for (int row = rows - 1; row >= 0; row--) {
+			byte_t * pixbuf = targa_rgba + row * columns * 4;
+			for (int column = 0; column < columns; ++column) {
+				if (24 == head->pixel_size) {
+					pixbuf[2] = stream.GetByte(); // blue
+					pixbuf[1] = stream.GetByte(); // green
+					pixbuf[0] = stream.GetByte(); // red
+					pixbuf[3] = 255;
+				}
+				else { // 32
+					pixbuf[2] = stream.GetByte(); // blue
+					pixbuf[1] = stream.GetByte(); // green
+					pixbuf[0] = stream.GetByte(); // red
+					pixbuf[3] = stream.GetByte(); // alpha
+				}
+				pixbuf += 4;
+			}
+		}
+	}
+	else { // IMAGE_TYPE_RUN_LENGTH_TRUE_COLOR
+		for (int row = rows - 1; row >= 0; row--) {
+			byte_t * pixbuf = targa_rgba + row * columns * 4;
+			for (int column = 0; column < columns;) {
+				byte_t packet_header = stream.GetByte();
+				int packet_size = 1 + (packet_header & 0x7f);
+
+				byte_t r, g, b, a;
+
+				if (packet_header & 0x80) { // first bit
+					if (24 == head->pixel_size) {
+						b = stream.GetByte(); // blue
+						g = stream.GetByte(); // green
+						r = stream.GetByte(); // red
+						a = 255;
+					}
+					else { // 32
+						b = stream.GetByte(); // blue
+						g = stream.GetByte(); // green
+						r = stream.GetByte(); // red
+						a = stream.GetByte(); // alpha
+					}
+
+					for (int j = 0; j < packet_size; ++j) {
+						pixbuf[0] = r;
+						pixbuf[1] = g;
+						pixbuf[2] = b;
+						pixbuf[3] = a;
+						pixbuf += 4;
+
+						++column;
+						if (column == columns) {  // run spans across rows
+							column = 0;
+							if (row > 0) {
+								row--;
+							}
+							else {
+								goto break_out;
+							}
+							pixbuf = targa_rgba + row * columns * 4;
+						}
+					}
+				}
+				else { // non run-length packet
+					for (int j = 0; j < packet_size; ++j) {
+						if (24 == head->pixel_size) {
+							pixbuf[2] = stream.GetByte(); // blue
+							pixbuf[1] = stream.GetByte(); // green
+							pixbuf[0] = stream.GetByte(); // red
+							pixbuf[3] = 255;
+						}
+						else { // 32
+							pixbuf[2] = stream.GetByte(); // blue
+							pixbuf[1] = stream.GetByte(); // green
+							pixbuf[0] = stream.GetByte(); // red
+							pixbuf[3] = stream.GetByte(); // alpha
+						}
+						pixbuf += 4;
+
+						++column;
+						if (column == columns) { // pixel packet run spans across rows
+							column = 0;
+							if (row > 0) {
+								row--;
+							}
+							else {
+								goto break_out;
+							}
+							pixbuf = targa_rgba + row * columns * 4;
+						}
+					}
+				}
+			}
+		}
+	break_out:;
+	}
+
+	image.width_ = head->width;
+	image.height_ = head->height;
+	image.pixels_ = (byte_t*)TEMP_ALLOC(numpixels * 4);
+
+	File_FreeBinary(buffer);
+
+	if (!image.pixels_) {
+		TEMP_FREE(targa_rgba);
+		return false;
+	}
+
+	// revert y
+	for (int y = 0; y < image.height_; ++y) {
+		const byte_t* src_line = targa_rgba + (image.height_ - y - 1) * image.width_ * 4;
+		byte_t * dst_line = image.pixels_ + y * image.width_ * 4;
+
+		memcpy(dst_line, src_line, image.width_ * 4);
+	}
+	
+	TEMP_FREE(targa_rgba);
+
+	return true;
+}
+
+static bool Image_HasAlpha(const image_s& image) {
+	int linewidth = image.width_ * 4;
+	for (int y = 0; y < image.height_; ++y) {
+		const byte_t* line = image.pixels_ + y * linewidth;
+		for (int x = 0; x < image.width_; ++x) {
+			const byte_t* pixel = line + x * 4;
+			if (pixel[3] < 255) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static bool Image_SaveBMP(const char* filename, const image_s& image) {
+	if (Image_HasAlpha(image)) {
+		int linewidth = image.width_ * 4;
+
+		bmpfilehead_s filehead;
+
+		filehead.bfType = 0x4d42;
+		filehead.bfOffBits = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s);
+		filehead.bfSize = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + linewidth * image.height_;
+		filehead.bfReserved1 = 0;
+		filehead.bfReserved2 = 0;
+
+		bmpinfohead_s infohead;
+
+		infohead.biBitCount = 32;
+		infohead.biClrImportant = 0;
+		infohead.biClrUsed = 0;
+		infohead.biCompression = 0;
+		infohead.biHeight = image.height_;
+		infohead.biPlanes = 1;
+		infohead.biSize = sizeof(infohead);
+		infohead.biSizeImage = 0;
+		infohead.biWidth = image.width_;
+		infohead.biXPelsPerMeter = 0;
+		infohead.biYPelsPerMeter = 0;
+
+		unsigned char* dst = (unsigned char*)TEMP_ALLOC(image.height_ * linewidth);
+		if (!dst) {
+			return false;
+		}
+
+		for (int h = 0; h < image.height_; ++h) {
+			unsigned char* dstline = dst + h * linewidth;
+			const unsigned char* srcline = image.pixels_ + h * linewidth;
+			for (int w = 0; w < image.width_; ++w) {
+				unsigned char* dstclr = dstline + w * 4;
+				const unsigned char* srcclr = srcline + w * 4;
+				dstclr[0] = srcclr[2]; // B
+				dstclr[1] = srcclr[1]; // G
+				dstclr[2] = srcclr[0]; // R
+				dstclr[3] = srcclr[3];
+			}
+		}
+
+		FILE* f = File_Open(filename, "wb");
+		if (f) {
+			fwrite(&filehead, sizeof(filehead), 1, f);
+			fwrite(&infohead, sizeof(infohead), 1, f);
+			fwrite(dst, image.height_ * linewidth, 1, f);
+			fclose(f);
+
+			TEMP_FREE(dst);
+
+			return true;
+		}
+		else {
+			TEMP_FREE(dst);
+
+			return false;
+		}
+	}
+	else {
+		int src_linewidth = image.width_ * 4;
+		int dst_linewidth = (image.width_ * 3 + 3) & ~3;
+
+		bmpfilehead_s filehead;
+
+		filehead.bfType = 0x4d42;
+		filehead.bfOffBits = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s);
+		filehead.bfSize = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + dst_linewidth * image.height_;
+		filehead.bfReserved1 = 0;
+		filehead.bfReserved2 = 0;
+
+		bmpinfohead_s infohead;
+
+		infohead.biBitCount = 24;
+		infohead.biClrImportant = 0;
+		infohead.biClrUsed = 0;
+		infohead.biCompression = 0;
+		infohead.biHeight = image.height_;
+		infohead.biPlanes = 1;
+		infohead.biSize = sizeof(infohead);
+		infohead.biSizeImage = 0;
+		infohead.biWidth = image.width_;
+		infohead.biXPelsPerMeter = 0;
+		infohead.biYPelsPerMeter = 0;
+
+		unsigned char* dst = (unsigned char*)TEMP_ALLOC(image.height_ * dst_linewidth);
+		if (!dst) {
+			return false;
+		}
+
+		for (int h = 0; h < image.height_; ++h) {
+			unsigned char* dstline = dst + h * dst_linewidth;
+			const unsigned char* srcline = image.pixels_ + h * src_linewidth;
+			for (int w = 0; w < image.width_; ++w) {
+				unsigned char* dstclr = dstline + w * 3;
+				const unsigned char* srcclr = srcline + w * 4;
+				dstclr[0] = srcclr[2]; // B
+				dstclr[1] = srcclr[1]; // G
+				dstclr[2] = srcclr[0]; // R
+			}
+		}
+
+		FILE* f = File_Open(filename, "wb");
+		if (f) {
+			fwrite(&filehead, sizeof(filehead), 1, f);
+			fwrite(&infohead, sizeof(infohead), 1, f);
+			fwrite(dst, image.height_ * dst_linewidth, 1, f);
+			fclose(f);
+
+			TEMP_FREE(dst);
+
+			return true;
+		}
+		else {
+			TEMP_FREE(dst);
+
+			return false;
+		}
+	}
+}
+
+static bool Image_SavePNG(const char* filename, const image_s& image) {
+	png_uint_32 dst_format = PNG_FORMAT_RGBA;
+
+	// PNG_FORMAT_RGB
+
+	png_image image_png;
+	memset(&image_png, 0, sizeof(image_png));
+	image_png.version = PNG_IMAGE_VERSION;
+	image_png.width = image.width_;
+	image_png.height = image.height_;
+	image_png.format = dst_format;
+
+	size_t size = PNG_IMAGE_SIZE(image_png); // get image size
+	png_bytep buffer_png = (png_bytep)TEMP_ALLOC(size);
+
+	// convert height direction
+	for (int h = 0; h < image.height_; ++h) {
+		const byte_t * src_line = image.pixels_ + h * image.width_ * 4;
+		png_bytep dst_line = buffer_png + (image.height_ - h - 1) * image.width_ * 4;
+
+		memcpy(dst_line, src_line, image.width_ * 4);
+	}
+
+	// save to file
+	bool ok = false;
+
+	if (png_image_write_to_file(&image_png, filename, 0, buffer_png, PNG_IMAGE_ROW_STRIDE(image_png), nullptr)) {
+		png_image_free(&image_png);
+		ok = true;
+	}
+	else {
+		printf("png_image_write_to_file failed\n");
+	}
+
+	TEMP_FREE(buffer_png);
+	buffer_png = nullptr;
+
+	return ok;
+}
+
+/*
+================================================================================
+terrain
+================================================================================
+*/
+
+bool gen_terrain_fault_formation(terrain_size_t sz, float min_z, float max_z, 
+	int iterations, float filter, terrain_s& terrain);
+bool gen_terrain_mid_point(terrain_size_t sz, float min_z, float max_z, float roughness, terrain_s& terrain);
+
+COMMON_API uint32_t Terrain_GetVertexCountPerEdge(terrain_size_t sz) {
+	// determine the vertex count per edge of the squared terrain
+	switch (sz) {
+	case terrain_size_t::TS_32:
+		return 33;
+	case terrain_size_t::TS_64:
+		return 65;
+	case terrain_size_t::TS_128:
+		return 129;
+	case terrain_size_t::TS_256:
+		return 257;
+	case terrain_size_t::TS_512:
+		return 513;
+	case terrain_size_t::TS_1K:
+		return 1025;
+	default:
+		printf("unknown size %d, set vertex_count_per_edge to 33\n", sz);
+		return 33;
+	}
+}
+
+COMMON_API bool Terrain_Generate(const terrain_gen_params_s& params, terrain_s& terrain)
+{
+	switch (params.algo_) {
+		case terrain_gen_algorithm_t::FAULT_FORMATION:
+			return gen_terrain_fault_formation(params.sz_, 
+				params.min_z_, params.max_z_, params.iterations_, params.filter_, terrain);
+		case terrain_gen_algorithm_t::MID_POINT:
+			return gen_terrain_mid_point(params.sz_, 
+				params.min_z_, params.max_z_, params.roughness_, terrain);
+		default:
+			printf("Unsupported terrain generation algorithm\n");
+			return false;
+	}
+}
+
+COMMON_API void Terrain_Free(terrain_s& terrain) {
+	if (terrain.heights_) {
+		delete[] terrain.heights_;
+		terrain.heights_ = nullptr;
+	}
+}
+
+COMMON_API bool	Terrain_Texture(const terrain_texture_tiles_s& tile_images,
+	const terrain_s& terrain, 
+	int width, int height, image_s& texture) 
+{
+	struct tile_s {
+		const char* filename_;
+		image_s		image_;
+		float		full_lower_;
+		float		full_upper_;
+		float		vanish_lower_;
+		float		vanish_upper_;
+	} tiles[4] = {};
+
+	/*
+	
+	tile 
+	
+	|----- vanish_upper_
+	|
+	|----- full_upper_
+	|      100%
+	|----- full_lower_
+	|
+	|----- vanish_lower_
+	
+	*/
+
+	auto GetPrecentage = [](const tile_s& tile, float z) -> float {
+		if (z > tile.vanish_upper_ || z < tile.vanish_lower_) {
+			return 0.0f;
+		}
+
+		if (z > tile.full_upper_) {
+			return (tile.vanish_upper_ - z) / (tile.vanish_upper_ - tile.full_upper_);
+		}
+
+		if (z < tile.full_lower_) {
+			return (z - tile.vanish_lower_) / (tile.full_lower_ - tile.vanish_lower_);
+		}
+
+		return 1.0f;
+	};
+
+	auto GetPixel = [](const image_s& image, float u, float v) -> glm::uvec3 {
+
+		int x = int((image.width_ * u) + 0.5f);
+		int y = int((image.height_ * v) + 0.5f);
+
+		if (x >= image.width_) {
+			x = image.width_ - 1;
+		}
+
+		if (y >= image.height_) {
+			y = image.height_ - 1;
+		}
+
+		const byte_t* pixel = image.pixels_ + y * image.width_ * 4 + x * 4;
+
+		return glm::uvec3(pixel[0], pixel[1], pixel[2]);
+	};
+
+	int vertex_count_per_edge = terrain.vertex_count_per_edge_;
+	int z_count = vertex_count_per_edge * vertex_count_per_edge;
+
+	float min_z = 9999999999.0f;
+	float max_z = -9999999999.0f;
+
+	for (int i = 0; i < z_count; ++i) {
+		float z = terrain.heights_[i];
+		if (z < min_z) {
+			min_z = z;
+		}
+		if (z > max_z) {
+			max_z = z;
+		}
+	}
+
+	float step = (max_z - min_z) / 7.0f;
+
+	tiles[0].filename_ = tile_images.lowest_;
+	tiles[0].full_lower_ = min_z;
+	
+	tiles[1].filename_ = tile_images.low_;
+	tiles[1].full_lower_ = min_z + step * 2.0f;
+
+	tiles[2].filename_ = tile_images.high_;
+	tiles[2].full_lower_ = min_z + step * 4.0f;
+
+	tiles[3].filename_ = tile_images.hightest_;
+	tiles[3].full_lower_ = min_z + step * 6.0f;
+
+	for (int i = 0; i < 4; ++i) {
+		tiles[i].full_upper_ = tiles[i].full_lower_ + step;
+		tiles[i].vanish_lower_ = tiles[i].full_lower_ - step;
+		tiles[i].vanish_upper_ = tiles[i].full_upper_ + step;
+	}
+
+	for (int i = 0; i < 4; ++i) {
+		if (!Img_Load(tiles[i].filename_, tiles[i].image_)) {
+
+			for (int i = 0; i < 4; ++i) {
+				if (tiles[i].image_.pixels_) {
+					Img_Free(tiles[i].image_);
+				}
+			}
+
+			return false;
+		}
+	}
+
+	if (!Img_Create(width, height, texture)) {
+		for (int i = 0; i < 4; ++i) {
+			if (tiles[i].image_.pixels_) {
+				Img_Free(tiles[i].image_);
+			}
+		}
+		return false;
+	}
+
+	for (int row = 0; row < height; ++row) {
+		float v = (float)row / (height - 1);
+		float y = v * (vertex_count_per_edge - 1);
+		for (int col = 0; col < width; ++col) {
+			float u = (float)col / (width - 1);
+			float x = u * (vertex_count_per_edge - 1);
+
+			int ix = (int)x;
+			int iy = (int)y;
+
+			float z = terrain.heights_[iy * vertex_count_per_edge + ix];
+
+			float percentage[4];
+			glm::uvec3 pixels[4];
+
+			for (int i = 0; i < 4; ++i) {
+				percentage[i] = GetPrecentage(tiles[i], z);
+				pixels[i] = GetPixel(tiles[i].image_, u, v);
+			}
+
+			glm::vec3 combined = glm::uvec3(0);
+
+			for (int i = 0; i < 4; ++i) {
+				combined.r += (float)pixels[i].r * percentage[i];
+				combined.g += (float)pixels[i].g * percentage[i];
+				combined.b += (float)pixels[i].b * percentage[i];
+			}
+
+			if (combined.r > 255.0f) {
+				combined.r = 255.0f;
+			}
+
+			if (combined.g > 255.0f) {
+				combined.g = 255.0f;
+			}
+
+			if (combined.b > 255.0f) {
+				combined.b = 255.0f;
+			}
+
+			byte_t* dst_pixel = texture.pixels_ + row * width * 4 + col * 4;
+			dst_pixel[0] = (byte_t)combined.r;
+			dst_pixel[1] = (byte_t)combined.g;
+			dst_pixel[2] = (byte_t)combined.b;
+			dst_pixel[3] = 255;
+		}
+	}
+
+	for (int i = 0; i < 4; ++i) {
+		if (tiles[i].image_.pixels_) {
+			Img_Free(tiles[i].image_);
+		}
+	}
+
+	return true;
+}
+
 /*
 ================================================================================
 model
@@ -1096,8 +2100,11 @@ model
 */
 
 static bool Model_LoadPLY(const char* filename, model_s & model);
+static bool Model_LoadObj(const char* filename, model_s & model);
 
-COMMON_API bool Model_Load(const char* filename, bool move_to_origin, model_s& model) {
+COMMON_API bool Model_Load(const char* filename, 
+	bool move_to_origin, model_s& model) 
+{
 	memset(&model, 0, sizeof(model));
 
 	const char* ext = strrchr(filename, '.');
@@ -1106,120 +2113,122 @@ COMMON_API bool Model_Load(const char* filename, bool move_to_origin, model_s& m
 		return false;
 	}
 
+	bool load_ok = false;
+
 	if (Str_ICmp(ext + 1, "ply") == 0) {
-		if (Model_LoadPLY(filename, model)) {
-			size_t stride = sizeof(glm::vec3);
-
-			switch (model.vertex_format_) {
-				case vertex_format_t::VF_POS_COLOR:
-					stride = sizeof(vertex_pos_color_s);
-					break;
-				case vertex_format_t::VF_POS_NORMAL:
-					stride = sizeof(vertex_pos_normal_s);
-					break;
-				case vertex_format_t::VF_POS_NORMAL_COLOR:
-					stride = sizeof(vertex_pos_normal_color_s);
-					break;
-				case vertex_format_t::VF_POS_NORMAL_UV:
-					stride = sizeof(vertex_pos_normal_uv_s);
-					break;
-				case vertex_format_t::VF_POS_NORMAL_UV_TANGENT:
-					stride = sizeof(vertex_pos_normal_uv_tangent_s);
-					break;
-				default:
-					Model_Free(model);
-					printf("bad vertex format\n");
-					return false;
-			}
-
-			if (model.num_vertex_) {
-				// calculate min max
-				char* v = (char*)model.vertices_;
-
-				glm::vec3* first_pos = (glm::vec3*)v;
-
-				float min_pos[3], max_pos[3];
-
-				min_pos[0] = max_pos[0] = first_pos->x;
-				min_pos[1] = max_pos[1] = first_pos->y;
-				min_pos[2] = max_pos[2] = first_pos->z;
-
-				for (uint32_t i = 1; i < model.num_vertex_; ++i) {
-					v += stride;
-					float * pos = (float*)v;
-
-					for (int j = 0; j < 3; ++j) {
-						if (pos[j] < min_pos[j]) {
-							min_pos[j] = pos[j];
-						}
-						if (pos[j] > max_pos[j]) {
-							max_pos[j] = pos[j];
-						}
-					}
-				}
-
-				model.min_[0] = min_pos[0];
-				model.min_[1] = min_pos[1];
-				model.min_[2] = min_pos[2];
-
-				model.max_[0] = max_pos[0];
-				model.max_[1] = max_pos[1];
-				model.max_[2] = max_pos[2];
-
-				if (move_to_origin) {
-					float ctr[3];
-
-					for (int j = 0; j < 3; ++j) {
-						ctr[j] = (min_pos[j] + max_pos[j]) * 0.5f;
-					}
-
-					v = (char*)model.vertices_;
-					for (uint32_t i = 0; i < model.num_vertex_; ++i) {
-						
-						float* pos = (float*)v;
-						
-						pos[0] -= ctr[0];
-						pos[1] -= ctr[1];
-						pos[2] -= ctr[2];
-
-						v += stride;
-					}
-
-					model.min_[0] -= ctr[0];
-					model.min_[1] -= ctr[1];
-					model.min_[2] -= ctr[2];
-
-					model.max_[0] -= ctr[0];
-					model.max_[1] -= ctr[1];
-					model.max_[2] -= ctr[2];
-				}
-
-			}
-
-			return true;
-		}
-		else {
-			return false;
-		}
+		load_ok = Model_LoadPLY(filename, model);
+	}
+	else if (Str_ICmp(ext + 1, "obj") == 0) {
+		load_ok = Model_LoadObj(filename, model);
 	}
 	else {
 		printf("Unsupported model file format %s.\n", ext + 1);
 		return false;
 	}
+	
+	if (!load_ok) {
+		Model_Free(model);
+		return false;
+	}
+
+	// calculate min max
+	size_t stride = sizeof(glm::vec3);
+
+	switch (model.vertex_format_) {
+	case vertex_format_t::VF_POS:
+		stride = sizeof(vertex_pos_s);
+		break;
+	case vertex_format_t::VF_POS_COLOR:
+		stride = sizeof(vertex_pos_color_s);
+		break;
+	case vertex_format_t::VF_POS_NORMAL:
+		stride = sizeof(vertex_pos_normal_s);
+		break;
+	case vertex_format_t::VF_POS_NORMAL_COLOR:
+		stride = sizeof(vertex_pos_normal_color_s);
+		break;
+	case vertex_format_t::VF_POS_NORMAL_UV:
+		stride = sizeof(vertex_pos_normal_uv_s);
+		break;
+	case vertex_format_t::VF_POS_NORMAL_UV_TANGENT:
+		stride = sizeof(vertex_pos_normal_uv_tangent_s);
+		break;
+	default:
+		Model_Free(model);
+		printf("bad vertex format\n");
+		return false;
+	}
+
+	char* v = (char*)model.vertices_;
+
+	glm::vec3* first_pos = (glm::vec3*)v;
+
+	float min_pos[3], max_pos[3];
+
+	min_pos[0] = max_pos[0] = first_pos->x;
+	min_pos[1] = max_pos[1] = first_pos->y;
+	min_pos[2] = max_pos[2] = first_pos->z;
+
+	for (uint32_t i = 1; i < model.num_vertex_; ++i) {
+		v += stride;
+		float* pos = (float*)v;
+
+		for (int j = 0; j < 3; ++j) {
+			if (pos[j] < min_pos[j]) {
+				min_pos[j] = pos[j];
+			}
+			if (pos[j] > max_pos[j]) {
+				max_pos[j] = pos[j];
+			}
+		}
+	}
+
+	model.min_[0] = min_pos[0];
+	model.min_[1] = min_pos[1];
+	model.min_[2] = min_pos[2];
+
+	model.max_[0] = max_pos[0];
+	model.max_[1] = max_pos[1];
+	model.max_[2] = max_pos[2];
+
+	if (move_to_origin) {
+		float ctr[3];
+
+		for (int j = 0; j < 3; ++j) {
+			ctr[j] = (min_pos[j] + max_pos[j]) * 0.5f;
+		}
+
+		v = (char*)model.vertices_;
+		for (uint32_t i = 0; i < model.num_vertex_; ++i) {
+
+			float* pos = (float*)v;
+
+			pos[0] -= ctr[0];
+			pos[1] -= ctr[1];
+			pos[2] -= ctr[2];
+
+			v += stride;
+		}
+
+		model.min_[0] -= ctr[0];
+		model.min_[1] -= ctr[1];
+		model.min_[2] -= ctr[2];
+
+		model.max_[0] -= ctr[0];
+		model.max_[1] -= ctr[1];
+		model.max_[2] -= ctr[2];
+	}
+
+	return true;
 }
 
 COMMON_API void Model_Free(model_s& model) {
-	if (model.indices_) {
-		TEMP_FREE(model.indices_);
-		model.indices_ = nullptr;
-	}
+	SAFE_FREE(model.parts_);
+	SAFE_FREE(model.materials_);
+	SAFE_FREE(model.indices_);
+	SAFE_FREE(model.vertices_);
 
-	if (model.vertices_) {
-		TEMP_FREE(model.vertices_);
-		model.vertices_ = nullptr;
-	}
-
-	model.num_vertex_ = model.num_triangle_ = 0;
+	model.num_vertex_ = model.num_index_ = model.num_material_ = model.num_parts_ = 0;
 }
 
 static bool Model_LoadPLY(const char* filename, model_s& model) {
@@ -1232,7 +2241,7 @@ static bool Model_LoadPLY(const char* filename, model_s& model) {
 
 	const glm::vec3* pos_lst = ply.GetPos();
 	const glm::vec3* normal_lst = ply.GetNormal();
-	const glm::vec2* uv_lst = ply.GetNV();
+	const glm::vec2* uv_lst = ply.GetUV();
 	const glm::vec4* color_lst = ply.GetColor();
 
 	uint32_t num_vertex = ply.NumberVertex();
@@ -1287,7 +2296,7 @@ static bool Model_LoadPLY(const char* filename, model_s& model) {
 	}
 
 	uint32_t num_triangle = ply.NumberTriangle();
-	model.num_triangle_ = num_triangle;
+	model.num_index_ = num_triangle * 3;
 
 	model.indices_ = (uint32_t*)TEMP_ALLOC(sizeof(uint32_t) * num_triangle * 3);
 	if (!model.indices_) {
@@ -1295,6 +2304,264 @@ static bool Model_LoadPLY(const char* filename, model_s& model) {
 	}
 
 	memcpy(model.indices_, ply.GetIndices(), sizeof(uint32_t) * num_triangle * 3);
+
+	model.materials_ = nullptr; // no material
+	model.num_material_ = 0;
+
+	// one part
+	model.parts_ = (model_part_s*)TEMP_ALLOC(sizeof(model_part_s));
+	model.num_parts_ = 1;
+
+	if (!model.parts_) {
+		return false;
+	}
+
+	model.parts_->material_idx_ = VK_INVALID_INDEX;
+	model.parts_->index_offset_ = 0;
+	model.parts_->index_count_ = num_triangle * 3;
+
+	return true;
+}
+
+static bool Model_LoadObj(const char* filename, model_s& model) {
+	memset(&model, 0, sizeof(model));
+
+	Obj obj;
+	if (!obj.Load(filename)) {
+		return false;
+	}
+
+	const glm::vec3* pos_lst = obj.GetPos();
+	const glm::vec3* normal_lst = obj.GetNormal();
+	const glm::vec2* uv_lst = obj.GetUV();
+	const Obj::material_s* material_lst = obj.GetMaterial();
+	Obj::face_group_s* face_group = obj.GetFaceGroup();
+
+	if (!pos_lst || !normal_lst || !face_group) {
+		printf("Bad model \"%s\"\n", filename);
+		return false;
+	}
+
+	uint32_t num_pos = obj.NumberPos();
+	uint32_t num_normal = obj.NumberNormal();
+	uint32_t num_uv = obj.NumberUV();
+
+	uint32_t num_vertex = num_pos;
+	if (num_vertex < num_normal) {
+		num_vertex = num_normal;
+	}
+
+	if (num_vertex < num_uv) {
+		num_vertex = num_uv;
+	}
+
+	model.num_vertex_ = num_vertex;
+
+	uint32_t num_material = obj.NumberMaterial();
+	uint32_t num_face_group = obj.NumFaceGroup();
+
+	size_t vertex_size = 0;
+
+	if (uv_lst) {
+		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL_UV;
+		vertex_size = sizeof(vertex_pos_normal_uv_s);
+	}
+	else {
+		model.vertex_format_ = vertex_format_t::VF_POS_NORMAL;
+		vertex_size = sizeof(vertex_pos_normal_s);
+	}
+
+	size_t vertices_size = vertex_size * num_vertex;
+
+	byte_t * vertices = (byte_t*)TEMP_ALLOC(vertices_size);
+	if (!vertices) {
+		return false;
+	}
+
+	// fill zero
+	memset(vertices, 0, vertices_size);
+
+	model.vertices_ = vertices;
+	model.num_vertex_ = num_vertex;
+
+	// init position
+	for (uint32_t i = 0; i < num_pos /* not num_vertex */ ; ++i) {
+		*(glm::vec3*)(vertices + vertex_size * i) = pos_lst[i];
+	}
+
+	uint32_t num_index = 0;
+	for (uint32_t i = 0; i < num_face_group; ++i) {
+		const Obj::face_group_s* fg = face_group + i;
+		for (uint32_t j = 0; j < fg->face_count_; ++j) {
+			const Obj::face_s* f = fg->faces_ + j;
+			if (f->vertex_count_ == 3) {
+				num_index += 3;
+			}
+			else if (f->vertex_count_ == 4) {
+				num_index += 6;
+			}
+			// ignore other faces
+		}
+	}
+
+	size_t indices_size = sizeof(uint32_t) * num_index;
+	uint32_t* indices = (uint32_t*)TEMP_ALLOC(indices_size);
+	if (!indices) {
+		printf("Could not allocate indices\n");
+		return false;
+	}
+
+	model.indices_ = indices;
+	model.num_index_ = num_index;
+
+	// convert material
+	if (num_material) {
+		char file_folder[MAX_PATH];
+		Str_ExtractFileDir(filename, file_folder, MAX_PATH);
+
+		size_t materials_size = sizeof(model_material_s) * num_material;
+		model_material_s* materials = (model_material_s*)TEMP_ALLOC(materials_size);
+		if (!materials) {
+			printf("Could not allocate materials\n");
+			return false;
+		}
+
+		model.materials_ = materials;
+		model.num_material_ = num_material;
+
+		for (uint32_t i = 0; i < num_material; ++i) {
+			const Obj::material_s* src = material_lst + i;
+			model_material_s* dst = materials + i;
+
+			if (src->map_Kd_[0]) {
+				Str_SPrintf(dst->tex_file_, MAX_PATH, "%s/%s", file_folder, src->map_Kd_);
+			}
+			else {
+				dst->tex_file_[0] = 0;
+			}
+
+			dst->ambient_ = src->Ka_;
+			dst->diffuse_ = src->Kd_;
+			dst->specular_ = src->Ks_;
+			dst->shiness_ = src->shiness_;
+			dst->alpha_ = src->alpha_;
+		}
+	}
+
+	if (num_face_group) {
+		size_t parts_size = sizeof(model_part_s) * num_face_group;
+		model_part_s* parts = (model_part_s*)TEMP_ALLOC(parts_size);
+		if (!parts) {
+			printf("Could not allocate parts\n");
+			return false;
+		}
+
+		model.parts_ = parts;
+		model.num_parts_ = num_face_group;
+
+		uint32_t written_idx = 0;
+
+		for (uint32_t i = 0; i < num_face_group; ++i) {
+			Obj::face_group_s* src_fg = face_group + i;
+			model_part_s* dst_fg = parts + i;
+
+			dst_fg->material_idx_ = src_fg->material_idx_;
+			dst_fg->index_offset_ = written_idx;
+
+			for (uint32_t j = 0; j < src_fg->face_count_; ++j) {
+				Obj::face_s* f = src_fg->faces_ + j;
+
+				for (uint32_t k = 0; k < f->vertex_count_; ++k) {
+					Obj::face_vertex_s* fv = f->vertices_ + k;
+
+					uint32_t fv_p_idx = fv->pos_idx_;
+					uint32_t fv_n_idx = fv->normal_idx_;
+					uint32_t fv_u_idx = fv->uv_idx_;
+
+					if (fv_p_idx >= num_pos) {
+						printf("pos_idx %u >= %d\n", fv_p_idx, num_pos);
+						return false;
+					}
+
+					if (fv_n_idx >= num_normal) {
+						printf("pos_idx %u >= %d\n", fv_n_idx, num_pos);
+						return false;
+					}
+
+					if (fv_u_idx >= num_uv) {
+						printf("pos_idx %u >= %d\n", fv_u_idx, num_pos);
+						return false;
+					}
+
+					glm::vec3 src_pos = pos_lst[fv_p_idx];
+					glm::vec3 src_normal = normal_lst[fv_n_idx];
+
+					if (uv_lst) {
+						glm::vec2 src_uv = uv_lst[fv_u_idx];
+
+						if (fv_n_idx >= num_pos || fv_u_idx >= num_pos) {
+							if (fv_u_idx > fv_n_idx) {
+								vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_u_idx);
+								dst_v->pos_ = src_pos;	// dupicate
+								dst_v->normal_ = src_normal;
+								dst_v->uv_ = src_uv;
+
+								fv->pos_idx_ = fv_u_idx;	// update 
+							}
+							else {
+								vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_n_idx);
+								dst_v->pos_ = src_pos;	// dupicate
+								dst_v->normal_ = src_normal;
+								dst_v->uv_ = src_uv;
+
+								fv->pos_idx_ = fv_n_idx;	// update 
+							}
+						}
+						else {
+							vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_p_idx);
+							dst_v->normal_ = src_normal;
+							dst_v->uv_ = src_uv;
+						}
+					}
+					else {
+						if (fv_n_idx >= num_pos) {
+							vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_n_idx);
+							dst_v->pos_ = src_pos;	// dupicate
+							dst_v->normal_ = src_normal;
+
+							fv->pos_idx_ = fv_n_idx;	// update 
+						}
+						else {
+							vertex_pos_normal_s* dst_v = (vertex_pos_normal_s*)(vertices + vertex_size * fv_p_idx);
+							dst_v->normal_ = src_normal;
+						}
+					}					
+				}
+
+				if (f->vertex_count_ == 3) {
+					indices[written_idx + 0] = f->vertices_[0].pos_idx_;
+					indices[written_idx + 1] = f->vertices_[1].pos_idx_;
+					indices[written_idx + 2] = f->vertices_[2].pos_idx_;
+
+					written_idx += 3;
+				}
+				else if (f->vertex_count_ == 4) {
+					indices[written_idx + 0] = f->vertices_[0].pos_idx_;
+					indices[written_idx + 1] = f->vertices_[1].pos_idx_;
+					indices[written_idx + 2] = f->vertices_[2].pos_idx_;
+
+					indices[written_idx + 3] = f->vertices_[2].pos_idx_;
+					indices[written_idx + 4] = f->vertices_[3].pos_idx_;
+					indices[written_idx + 5] = f->vertices_[0].pos_idx_;
+
+					written_idx += 6;
+				}
+				// ignore other faces
+			}
+
+			dst_fg->index_count_ = written_idx - dst_fg->index_offset_;
+		}
+	}
 
 	return true;
 }

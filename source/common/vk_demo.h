@@ -14,22 +14,58 @@ public:
 	VkDemo();
 	virtual ~VkDemo();
 
-	bool					Init(const char* project_shader_dir);
+	bool					Init(const char* project_shader_dir,
+                                uint32_t max_uniform_buffer,
+                                uint32_t max_storage_buffer,
+                                uint32_t max_texture,
+                                uint32_t max_desp_set);
 	void					Shutdown();
-    virtual void			Display() = 0;
+    virtual void			Display();
     virtual void			BuildCommandBuffers() = 0;
+    virtual void            Update();
 
     void                    MainLoop();
 
     // interface
+    VkDevice                GetDevice() const;
+    VkDescriptorPool        GetDescriptorPool() const;
+
+    size_t                  GetAlignedBufferSize(size_t sz) const;
+    size_t                  GetAlignedMinOffsetSize(size_t sz) const;
+
     bool                    LoadModel(const char * filename, bool move_to_origin, model_s & model) const;
 
-    bool                    CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size) const;
+    bool                    CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_prop_flags, VkDeviceSize req_size) const;
     void                    DestroyBuffer(vk_buffer_s& buffer) const;
-    void					UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const;
+    bool					UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const;
 
     void *                  MapMemory(const vk_buffer_s& buffer) const;
     void                    UnmapMemory(const vk_buffer_s& buffer);
+
+    bool                    CreateBufferAddInitData(vk_buffer_s& buffer, VkBufferUsageFlags usage_flags, const void* data, size_t data_size, bool staging);
+    bool                    CreateVertexBuffer(vk_buffer_s & buffer, const void * data, size_t data_size, bool staging);
+    bool                    CreateIndexBuffer(vk_buffer_s & buffer, const void* data, size_t data_size, bool staging);
+
+    bool                    CreateSampler(VkFilter mag_filter, VkFilter min_filter, VkSamplerMipmapMode mipmap_mode, 
+                                VkSamplerAddressMode address_mode, VkSampler& sampler);
+    void                    DestroySampler(VkSampler & sampler);
+    
+    bool                    Create2DImage(vk_image_s & vk_image, VkFormat format, VkImageTiling tiling, 
+                                VkImageUsageFlags usage, uint32_t width, uint32_t height,
+                                VkMemoryPropertyFlags memory_property_flags,
+                                VkImageAspectFlags image_aspect_flags,
+                                VkSampler sampler,
+                                VkImageLayout image_layout);
+    void                    Destroy2DImage(vk_image_s& vk_image);
+
+    bool					Load2DTexture(const char* filename, 
+                                VkFormat format, VkImageUsageFlags image_usage, 
+                                VkSampler sampler, VkImageLayout image_layout, vk_image_s & vk_image);
+    bool                    Update2DTexture(const image_s & pic, vk_image_s& vk_image);
+
+
+    void                    DestroyFramebuffer(VkFramebuffer & vk_framebuffer);
+    void                    DestroyRenderPass(VkRenderPass & vk_render_pass);
 
 protected:
 
@@ -130,6 +166,7 @@ protected:
 
     // command pool
     VkCommandPool           vk_command_pool_;
+    VkCommandPool           vk_command_pool_transient_;
 
     // command buffers
     VkCommandBuffer         vk_draw_cmd_buffers_[MAX_SWAPCHAIN_IMAGES];
@@ -137,7 +174,6 @@ protected:
 
     // descriptor
     VkDescriptorPool        vk_descriptor_pool_;
-
     // pipeline cache
     VkPipelineCache         vk_pipeline_cache_;
 
@@ -146,13 +182,7 @@ protected:
     virtual void            AddAdditionalInstanceExtensions(std::vector<const char*> & extensions) const;
     virtual void            AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const;
 
-    // descriptor set pool
-    bool					CreateDescriptorPools(
-                                uint32_t max_uniform_buffer, 
-                                uint32_t max_storage_buffer, 
-                                uint32_t max_texture,
-                                uint32_t max_desp_set);
-    void					DestroyDescriptorPools();
+    void                    SubmitCommandBufferAndWait(VkCommandBuffer command_buffer);
 
     // helper
     uint32_t                GetMemoryTypeIndex(uint32_t memory_type_bits, 
@@ -161,7 +191,32 @@ protected:
     
     void                    SetTitle(const char * text);
     void                    GetViewMatrix(glm::mat4 & view_mat) const;
-    virtual void            GetModelMatrix(glm::mat4& model_mat) const;
+    void                    GetModelMatrix(glm::mat4& model_mat) const;
+
+    // flags
+    static const uint32_t   VERTEX_FIELD_COLOR = 1;
+    static const uint32_t   VERTEX_FIELD_NORMAL = 2;
+    static const uint32_t   VERTEX_FIELD_UV = 4;
+    static const uint32_t   VERTEX_FIELD_TANGENT = 8;
+    static const uint32_t   VERTEX_FIELD_ALL = 0xffffffff;
+
+    struct create_pipeline_vert_frag_params_s {
+        const char*         vertex_shader_filename_;
+        const char*         framgment_shader_filename_;
+        vertex_format_t     vertex_format_;
+        instance_format_t   instance_format_;
+        uint32_t            additional_vertex_fields_;
+        VkPrimitiveTopology primitive_topology_;
+        VkBool32            primitive_restart_enable_;
+        VkPolygonMode       polygon_mode_;
+        VkCullModeFlags     cull_mode_;
+        VkFrontFace         front_face_;
+        VkPipelineLayout    pipeline_layout_;
+        VkRenderPass        render_pass_;
+    };
+
+    bool                    CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& params,
+                                VkPipeline& pipeline);
 
 protected:
 
@@ -185,20 +240,13 @@ protected:
 
     float                   move_speed_;
 
-    void                    RotateCamera();
+    glm::mat4 *             model_rotate_mat_;
 
-    virtual void            KeyF2Down();
+    void                    CursorRotate(float delta_yaw, float delta_pitch);
+
+    virtual void            FuncKeyDown(uint32_t key);
 
     // helper
-    
-
-    bool                    Create2DImage(vk_image_s & vk_image, VkFormat format, VkImageTiling tiling, 
-                                VkImageUsageFlags usage, uint32_t width, uint32_t height,
-                                VkMemoryPropertyFlags memory_property_flags,
-                                VkImageAspectFlags image_aspect_flags);
-    void                    Destroy2DImage(vk_image_s& vk_image);
-
-    bool					Load2DTexture(const char* filename, VkFormat format, VkImageUsageFlags image_usage, vk_image_s & vk_image);
 
     void                    DestroyDescriptorSetLayout(VkDescriptorSetLayout & descriptor_set_layout);
 
@@ -263,15 +311,14 @@ private:
 
     // render pass
     bool                    CreateRenderPass();
-    void                    DestroyRenderPass();
 
     // framebuffers
     bool                    CreateFramebuffers();
     void                    DestroyFramebuffers();
 
     // command pool
-    bool                    CreateCommandPool();
-    void                    DestroyCommandPool();
+    bool                    CreateCommandPools();
+    void                    DestroyCommandPools();
 
     // command buffers
     bool                    AllocCommandBuffers();
@@ -280,6 +327,14 @@ private:
     // pipeline
     bool                    CreatePipelineCache();
     void                    DestroyPipelineCache();
+
+    // descriptor set pool
+    bool					CreateDescriptorPools(
+                                uint32_t max_uniform_buffer,
+                                uint32_t max_storage_buffer,
+                                uint32_t max_texture,
+                                uint32_t max_desp_set);
+    void					DestroyDescriptorPools();
 
     void                    CheckMovement();
     

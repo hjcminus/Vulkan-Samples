@@ -4,7 +4,6 @@
 
 #include "../common/inc.h"
 #include "mesh_shader.h"
-#include "gen_terrain_mid_point.h"
 
 /*
 ================================================================================
@@ -20,7 +19,8 @@ MeshShaderDemo::MeshShaderDemo():
 	vk_pipeline_layout_(VK_NULL_HANDLE),
 	vk_pipeline_wireframe_(VK_NULL_HANDLE),
 	vk_pipeline_fill_(VK_NULL_HANDLE),
-	wireframe_mode_(true)
+	wireframe_mode_(true),
+	random_seed_(1)
 {
 #if defined(_WIN32)
 	cfg_demo_win_class_name_ = TEXT("Mesh shader (F2: toggle wireframe & fill mode)");
@@ -41,6 +41,16 @@ MeshShaderDemo::MeshShaderDemo():
 	memset(&uniform_buffer_terrain_, 0, sizeof(uniform_buffer_terrain_));
 	memset(&shader_storage_buffer_heights_, 0, sizeof(shader_storage_buffer_heights_));
 	memset(&shader_storage_buffer_color_table_, 0, sizeof(shader_storage_buffer_color_table_));
+
+	vertex_count_per_edge_ = Terrain_GetVertexCountPerEdge(TERRAIN_SIZE);
+
+	// init camera
+	float ctr_xy = (vertex_count_per_edge_ - 1) * 0.5f;
+
+	camera_.pos_ = glm::vec3(ctr_xy, ctr_xy, (vertex_count_per_edge_ - 1) * 0.5f);
+	camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
+
+	CursorRotate(0.0f, -45.0f);
 }
 
 MeshShaderDemo::~MeshShaderDemo() {
@@ -48,11 +58,8 @@ MeshShaderDemo::~MeshShaderDemo() {
 }
 
 bool MeshShaderDemo::Init() {
-	if (!VkDemo::Init("mesh_shader" /* shader files directory */)) {
-		return false;
-	}
-
-	if (!CreateDescriptorPools(3, 2, 0, 2)) {
+	if (!VkDemo::Init("mesh_shader" /* shader files directory */,
+		3, 2, 0, 2)) {
 		return false;
 	}
 
@@ -67,9 +74,15 @@ bool MeshShaderDemo::Init() {
 		return false;
 	}
 
+	if (!UpdateTerrainUBO()) {
+		return false;
+	}
+
 	if (!CreateShaderStorageBuffers()) {
 		return false;
 	}
+
+	UpdateTerrain();
 
 	if (!CreateDescriptorSetLayout()) {
 		return false;
@@ -99,6 +112,9 @@ bool MeshShaderDemo::Init() {
 
 	enable_display_ = true;
 
+	printf("F2: switch fill & line mode\n");
+	printf("F3: update terrain\n");
+
 	return true;
 }
 
@@ -112,82 +128,16 @@ void MeshShaderDemo::Shutdown() {
 	DestroyDescriptorSetLayout(vk_descriptorset_layout_);
 	DestroyShaderStorageBuffers();
 	DestroyUniformBuffers();
-	DestroyDescriptorPools();
 
 	VkDemo::Shutdown();
 }
 
-void MeshShaderDemo::Display() {
-	uint32_t current_image_idx = 0;
-	VkResult rt;
-
-	UpdateMVPUniformBuffer();
-
-	// If semaphore is not VK_NULL_HANDLE, it must not have any uncompleted signal or wait
-	//   operations pending
-	// If fence is not VK_NULL_HANDLE, fence must be unsignaled
-	// semaphore and fence must not both be equal to VK_NULL_HANDLE
-	rt = vkAcquireNextImageKHR(vk_device_, vk_swapchain_, UINT64_MAX /* never timeout */,
-		vk_semaphore_present_complete_, VK_NULL_HANDLE, &current_image_idx);
-
-	if (rt != VK_SUCCESS) {
-		printf("vkAcquireNextImageKHR error\n");
-		return;
-	}
-
-	VkFence fence = vk_wait_fences_[current_image_idx];
-
-	vkWaitForFences(vk_device_, 1, &fence, VK_TRUE /* waitAll */, UINT64_MAX /* never timeout */);
-	vkResetFences(vk_device_, 1, &fence);	// set the state of current fence to unsignal.
-
-	VkSubmitInfo submit_info = {};
-
-	VkPipelineStageFlags pipeline_stage_flags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submit_info.pNext = nullptr;
-	submit_info.waitSemaphoreCount = 1;
-	submit_info.pWaitSemaphores = &vk_semaphore_present_complete_;
-	submit_info.pWaitDstStageMask = &pipeline_stage_flags;
-	submit_info.commandBufferCount = 1;
-	submit_info.pCommandBuffers = &vk_draw_cmd_buffers_[current_image_idx];
-	submit_info.signalSemaphoreCount = 1;
-	submit_info.pSignalSemaphores = &vk_semaphore_render_complete_;
-
-	// change command buffer state from executable to pending
-	// The fence (optional) will be signaled once all submitted command buffers have completed execution.
-	rt = vkQueueSubmit(vk_graphics_queue_, 1, &submit_info, fence);
-	if (rt != VK_SUCCESS) {
-		printf("vkQueueSubmit error\n");
-		return;
-	}
-
-	VkPresentInfoKHR present_info = {};
-
-	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	present_info.pNext = nullptr;
-	present_info.waitSemaphoreCount = 1;
-	present_info.pWaitSemaphores = &vk_semaphore_render_complete_;
-	present_info.swapchainCount = 1;
-	present_info.pSwapchains = &vk_swapchain_;
-	present_info.pImageIndices = &current_image_idx;
-	present_info.pResults = nullptr;
-
-	rt = vkQueuePresentKHR(vk_graphics_queue_, &present_info);
-	if (rt != VK_SUCCESS) {
-		printf("vkQueuePresentKHR error\n");
-		return;
-	}
-
-	rt = vkQueueWaitIdle(vk_graphics_queue_);
-	if (rt != VK_SUCCESS) {
-		printf("vkQueueWaitIdle error\n");
-		return;
-	}
-}
-
 void MeshShaderDemo::BuildCommandBuffers() {
 	BuildCommandBuffer(wireframe_mode_ ? vk_pipeline_wireframe_ : vk_pipeline_fill_);
+}
+
+void MeshShaderDemo::Update() {
+	UpdateMVPUniformBuffer();
 }
 
 void MeshShaderDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
@@ -204,15 +154,27 @@ void MeshShaderDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& ext
 	extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
 }
 
-void MeshShaderDemo::KeyF2Down() {
-	wireframe_mode_ = !wireframe_mode_;
-	BuildCommandBuffer(wireframe_mode_ ? vk_pipeline_wireframe_ : vk_pipeline_fill_);
+void MeshShaderDemo::FuncKeyDown(uint32_t key) {
+	if (key == KEY_F2) {
+		wireframe_mode_ = !wireframe_mode_;
+		BuildCommandBuffer(wireframe_mode_ ? vk_pipeline_wireframe_ : vk_pipeline_fill_);
+	}
+	else if (key == KEY_F3) {
+		UpdateTerrain();
+	}
 }
 
 // uniform buffer
 bool MeshShaderDemo::CreateUniformBuffers() {
-	return CreateBuffer(uniform_buffer_mvp_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_mvp_s)) &&
-		CreateBuffer(uniform_buffer_terrain_, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(ubo_terrain_s));
+	return CreateBuffer(uniform_buffer_mvp_, 
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		sizeof(ubo_mat_s))
+		&&
+		CreateBuffer(uniform_buffer_terrain_, 
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			sizeof(ubo_terrain_s));
 }
 
 void MeshShaderDemo::DestroyUniformBuffers() {
@@ -220,76 +182,49 @@ void MeshShaderDemo::DestroyUniformBuffers() {
 	DestroyBuffer(uniform_buffer_mvp_);
 }
 
+bool MeshShaderDemo::UpdateTerrainUBO() {
+	ubo_terrain_s ubo_terrain = {};
+	ubo_terrain.vertex_count_per_edge_ = vertex_count_per_edge_;
+
+	// update ubo_terrain
+	return UpdateBuffer(uniform_buffer_terrain_, &ubo_terrain, sizeof(ubo_terrain));
+}
+
 // shader storage buffer
 bool MeshShaderDemo::CreateShaderStorageBuffers() {
 	// -- shader storage buffer of height values --
 
-	terrain_s test_terrain = {};
-	// if sz value changed we need change camera position & value in task shader also
+	uint32_t height_buffer_size = (uint32_t)(sizeof(float) * SQUARE(vertex_count_per_edge_));
 
-	constexpr int MAX_Z = 32;
-
-	if (!gen_terrain_mid_point(terrain_size_t::TS_128, 0.0f, MAX_Z, test_terrain)) {
-		printf("Could not generate a test terrain\n");
+	if (!CreateBuffer(shader_storage_buffer_heights_, 
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		height_buffer_size)) {
 		return false;
 	}
-
-	// init camera
-	float ctr_xy = (test_terrain.vertex_count_per_edge_ - 1) * 0.5f;
-
-	camera_.pos_ = glm::vec3(ctr_xy, ctr_xy, MAX_Z * 2.0f);
-	camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
-
-	view_angles_[ANGLE_YAW] = 0.0f;
-	view_angles_[ANGLE_PITCH] = -45.0f;
-
-	RotateCamera();
-
-	ubo_terrain_s ubo_terrain = {};
-	ubo_terrain.vertex_count_per_edge_ = test_terrain.vertex_count_per_edge_;
-
-	uint32_t height_buffer_size = (uint32_t)(test_terrain.vertex_count_per_edge_ * test_terrain.vertex_count_per_edge_ * 
-		sizeof(float));
-
-	if (!CreateBuffer(shader_storage_buffer_heights_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, height_buffer_size)) {
-		return false;
-	}
-
-	void* data = nullptr;
-	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_heights_.memory_, 0,
-		shader_storage_buffer_heights_.memory_size_, 0 /*flags*/, &data)) {
-		printf("vkMapMemory error\n");
-		return false;
-	}
-
-	memcpy(data, test_terrain.heights_, height_buffer_size);
-
-	// now we can free terrain memory
-	free_terrain(test_terrain);
-
-	vkUnmapMemory(vk_device_, shader_storage_buffer_heights_.memory_);
-
-	// update ubo_terrain
-	UpdateBuffer(uniform_buffer_terrain_, &ubo_terrain, sizeof(ubo_terrain));
 
 	// -- shader storage buffer of color table --
 	
-	glm::vec4 color_table[MAX_Z + 1];
+	glm::vec4 color_table[TERRAIN_MAX_Z + 1];
 
 	rgb_s rgb_start = { 0.0, 0.0, 1.0 };	// blue
 	rgb_s rgb_stop  = { 1.0, 0.0, 0.0 };	// red
 
-	for (int i = 0; i <= MAX_Z; ++i) {
-		double t = i / (float)MAX_Z;
+	for (int i = 0; i <= TERRAIN_MAX_Z; ++i) {
+		double t = i / (float)TERRAIN_MAX_Z;
 		rgb_s rgb_int;
 		RGBInterpolate(rgb_start, rgb_stop, t, rgb_int);
 		color_table[i] = glm::vec4((float)rgb_int.r_, (float)rgb_int.g_, (float)rgb_int.b_, 1.0f /* opaque */);
 	}
 
-	if (!CreateBuffer(shader_storage_buffer_color_table_, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sizeof(color_table))) {
+	if (!CreateBuffer(shader_storage_buffer_color_table_, 
+		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		sizeof(color_table))) {
 		return false;
 	}
 
+	void* data = nullptr;
 	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_color_table_.memory_, 0,
 		shader_storage_buffer_color_table_.memory_size_, 0 /*flags*/, &data)) {
 		printf("vkMapMemory error\n");
@@ -376,7 +311,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 	write_descriptor_set[idx].descriptorCount = 1;
 	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
 	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_mvp_.buffer_info_;
+	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_mvp_.desc_buffer_info_;
 	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
 	idx++;
@@ -388,7 +323,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 	write_descriptor_set[idx].descriptorCount = 1;
 	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
 	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.buffer_info_;
+	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.desc_buffer_info_;
 	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
 	idx++;
@@ -400,7 +335,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 	write_descriptor_set[idx].descriptorCount = 1;
 	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_heights_.buffer_info_;
+	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_heights_.desc_buffer_info_;
 	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
 	idx++;
@@ -412,7 +347,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 	write_descriptor_set[idx].descriptorCount = 1;
 	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_color_table_.buffer_info_;
+	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_color_table_.desc_buffer_info_;
 	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
 	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_set.size(), write_descriptor_set.data(), 0, nullptr);
@@ -477,7 +412,7 @@ bool MeshShaderDemo::AllocDemoDescriptorSet2() {
 	write_descriptor_set[idx].descriptorCount = 1;
 	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
 	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.buffer_info_;
+	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.desc_buffer_info_;
 	write_descriptor_set[idx].pTexelBufferView = nullptr;
 
 	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_set.size(), write_descriptor_set.data(), 0, nullptr);
@@ -712,6 +647,49 @@ bool MeshShaderDemo::CreatePipelines() {
 	return rt1 == VK_SUCCESS && rt2 == VK_SUCCESS;
 }
 
+void MeshShaderDemo::UpdateTerrain() {
+	SRand(random_seed_++);
+
+	// -- shader storage buffer of height values --
+
+	terrain_gen_params_s terrain_gen_params = {
+		.algo_ = terrain_gen_algorithm_t::MID_POINT,
+		.sz_ = TERRAIN_SIZE,
+		.min_z_ = 0.0f,
+		.max_z_ = TERRAIN_MAX_Z,
+		.iterations_ = 0,	// not used
+		.filter_ = 0.0f,		// not used
+		.roughness_ = 0.75f,	// 0.25 ~ 1.5
+	};
+
+	terrain_s test_terrain = {};
+	// if sz value changed we need change camera position & value in task shader also
+
+	if (!Terrain_Generate(terrain_gen_params, test_terrain)) {
+		printf("Could not generate a test terrain\n");
+		return;
+	}
+
+	uint32_t height_buffer_size = (uint32_t)(sizeof(float) * SQUARE(test_terrain.vertex_count_per_edge_));
+
+	void* data = nullptr;
+	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_heights_.memory_, 0,
+		shader_storage_buffer_heights_.memory_size_, 0 /*flags*/, &data)) {
+
+		Terrain_Free(test_terrain);
+
+		printf("vkMapMemory error\n");
+		return;
+	}
+
+	memcpy(data, test_terrain.heights_, height_buffer_size);
+
+	// now we can free terrain memory
+	Terrain_Free(test_terrain);
+
+	vkUnmapMemory(vk_device_, shader_storage_buffer_heights_.memory_);
+}
+
 // build command buffer
 void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 	VkCommandBufferBeginInfo cmd_buf_begin_info = {};
@@ -793,7 +771,7 @@ void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 }
 
 void MeshShaderDemo::UpdateMVPUniformBuffer() {
-	ubo_mvp_s ubo_mvp;
+	ubo_mat_s ubo_mvp;
 
 	glm::mat4 projection_matrix = glm::perspective(glm::radians(70.0f),
 		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 4.0f, 4096.0f);
@@ -804,7 +782,7 @@ void MeshShaderDemo::UpdateMVPUniformBuffer() {
 	glm::mat4 model_matrix;
 	GetModelMatrix(model_matrix);
 
-	ubo_mvp.mvp_ = projection_matrix * view_matrix * model_matrix;
+	ubo_mvp.matrix_ = projection_matrix * view_matrix * model_matrix;
 
 	UpdateBuffer(uniform_buffer_mvp_, &ubo_mvp, sizeof(ubo_mvp));
 }

@@ -6,11 +6,11 @@ layout (binding = 0) uniform UBO_MVP {
 	mat4 model;
 } ubo_mvp;
 
-layout (std140, binding = 1) uniform UBO_LIGHT {
-	vec4 light_pos;
-	vec4 light_color;
+layout (std140, binding = 1) uniform UBO_POINT_LIGHT {
+	vec4 pos;
+	vec4 color;
 	float radius;
-} ubo_light;
+} ubo_point_light;
 
 layout (set = 1, binding = 0) uniform sampler2D texture_color;
 layout (set = 1, binding = 1) uniform sampler2D normal_map;
@@ -37,11 +37,11 @@ void main() {
 
 	vec4 mat_color = texture(texture_color, in_texcoord2d);
 
-	vec3 light_dir = normalize(ubo_light.light_pos.xyz - in_pos);
+	vec3 light_dir = normalize(ubo_point_light.pos.xyz - in_pos);
 
 	float diff = max(dot(frag_normal, light_dir), 0.0);
 	
-	vec3 diffuse = ubo_light.light_color.rgb * diff;
+	vec3 diffuse = ubo_point_light.color.rgb * diff;
 	vec3 combined = ambient * mat_color.rgb + diffuse * mat_color.rgb;
 
 	out_frag_color = vec4(combined, 1.0);

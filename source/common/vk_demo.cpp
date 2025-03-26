@@ -52,9 +52,11 @@ VkDemo::VkDemo():
     vk_pipeline_cache_(VK_NULL_HANDLE),
     vk_render_pass_(VK_NULL_HANDLE),
 	vk_command_pool_(VK_NULL_HANDLE),
+    vk_command_pool_transient_(VK_NULL_HANDLE),
     enable_display_(false),
     model_scale_(1.0f),
     move_speed_(2.0f),
+    model_rotate_mat_(nullptr),
     left_button_down_(false),
     cursor_x_(0),
     cursor_y_(0),
@@ -63,6 +65,8 @@ VkDemo::VkDemo():
 	shaders_dir_[0] = '\0';
     textures_dir_[0] = '\0';
     models_dir_[0] = '\0';
+
+    model_rotate_mat_ = new glm::mat4(1.0f);
 
 	memset(&vk_physical_device_memory_properties_, 0, sizeof(vk_physical_device_memory_properties_));
 	memset(&vk_physical_device_properties2_, 0, sizeof(vk_physical_device_properties2_));
@@ -88,13 +92,22 @@ VkDemo::VkDemo():
 
     view_angles_[ANGLE_YAW] = 0.0f;
     view_angles_[ANGLE_PITCH] = 0.0f;
+
+#if defined(_WIN32)
+    hInstance_ = GetModuleHandle(NULL);
+#endif
 }
 
 VkDemo::~VkDemo() {
-	// do nothing
+    delete model_rotate_mat_;
 }
 
-bool VkDemo::Init(const char* project_shader_dir) {
+bool VkDemo::Init(const char* project_shader_dir,
+    uint32_t max_uniform_buffer,
+    uint32_t max_storage_buffer,
+    uint32_t max_texture,
+    uint32_t max_desp_set) 
+{
     // setup folders
     Str_SPrintf(shaders_dir_, MAX_PATH, "%s/shaders/%s",
         GetDataFolder(), project_shader_dir);
@@ -153,7 +166,7 @@ bool VkDemo::Init(const char* project_shader_dir) {
         return false;
     }
 
-    if (!CreateCommandPool()) {
+    if (!CreateCommandPools()) {
         return false;
     }
 
@@ -165,15 +178,21 @@ bool VkDemo::Init(const char* project_shader_dir) {
         return false;
     }
 
+    if (!CreateDescriptorPools(max_uniform_buffer, max_storage_buffer,
+        max_texture, max_desp_set)) {
+        return false;
+    }
+
     return true;
 }
 
 void VkDemo::Shutdown() {
+    DestroyDescriptorPools();
     DestroyPipelineCache();
     FreeCommandBuffers();
-    DestroyCommandPool();
+    DestroyCommandPools();
     DestroyFramebuffers();
-    DestroyRenderPass();
+    DestroyRenderPass(vk_render_pass_);
     DestroyDepthStencil();
     DestroyDemoFences();
     DestroySwapChain();
@@ -181,6 +200,77 @@ void VkDemo::Shutdown() {
     DestroyDemoSemaphores();
     DestroyDevice();
     DestroyVkInstance();
+}
+
+void VkDemo::Display() {
+    uint32_t current_image_idx = 0;
+    VkResult rt;
+
+    Update();
+
+    // If semaphore is not VK_NULL_HANDLE, it must not have any uncompleted signal or wait
+    //   operations pending
+    // If fence is not VK_NULL_HANDLE, fence must be unsignaled
+    // semaphore and fence must not both be equal to VK_NULL_HANDLE
+    rt = vkAcquireNextImageKHR(vk_device_, vk_swapchain_, UINT64_MAX /* never timeout */,
+        vk_semaphore_present_complete_, VK_NULL_HANDLE, &current_image_idx);
+
+    if (rt != VK_SUCCESS) {
+        printf("vkAcquireNextImageKHR error\n");
+        return;
+    }
+
+    VkFence fence = vk_wait_fences_[current_image_idx];
+
+    vkWaitForFences(vk_device_, 1, &fence, VK_TRUE /* waitAll */, UINT64_MAX /* never timeout */);
+    vkResetFences(vk_device_, 1, &fence);	// set the state of current fence to unsignal.
+
+    VkSubmitInfo submit_info = {};
+
+    VkPipelineStageFlags pipeline_stage_flags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.pNext = nullptr;
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = &vk_semaphore_present_complete_;
+    submit_info.pWaitDstStageMask = &pipeline_stage_flags;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &vk_draw_cmd_buffers_[current_image_idx];
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &vk_semaphore_render_complete_;
+
+    rt = vkQueueSubmit(vk_graphics_queue_, 1, &submit_info, fence);
+    if (rt != VK_SUCCESS) {
+        printf("vkQueueSubmit error\n");
+        return;
+    }
+
+    VkPresentInfoKHR present_info = {};
+
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.pNext = nullptr;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &vk_semaphore_render_complete_;
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &vk_swapchain_;
+    present_info.pImageIndices = &current_image_idx;
+    present_info.pResults = nullptr;
+
+    rt = vkQueuePresentKHR(vk_graphics_queue_, &present_info);
+    if (rt != VK_SUCCESS) {
+        printf("vkQueuePresentKHR error\n");
+        return;
+    }
+
+    rt = vkQueueWaitIdle(vk_graphics_queue_);
+    if (rt != VK_SUCCESS) {
+        printf("vkQueueWaitIdle error\n");
+        return;
+    }
+}
+
+void VkDemo::Update() {
+    // override by child class
 }
 
 void VkDemo::MainLoop() {
@@ -197,6 +287,37 @@ void VkDemo::MainLoop() {
 }
 
 // interface
+VkDevice VkDemo::GetDevice() const {
+    return vk_device_;
+}
+
+VkDescriptorPool VkDemo::GetDescriptorPool() const {
+    return vk_descriptor_pool_;
+}
+
+size_t VkDemo::GetAlignedBufferSize(size_t sz) const {
+    // The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
+        // or offset plus size must equal the size of memory
+    VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
+
+    if (sz % nonCoherentAtomSize) {
+        return ((sz / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
+    }
+    else {
+        return sz;
+    }
+}
+
+size_t VkDemo::GetAlignedMinOffsetSize(size_t sz) const {
+    size_t limit = vk_physical_device_properties2_.properties.limits.minUniformBufferOffsetAlignment;
+    if (sz % limit) {
+        return ((sz / limit) + 1) * limit;
+    }
+    else {
+        return sz;
+    }
+}
+
 bool VkDemo::LoadModel(const char* filename, bool move_to_origin, model_s& model) const {
     char full_filename[MAX_PATH];
     Str_SPrintf(full_filename, MAX_PATH, "%s/%s", models_dir_, filename);
@@ -204,15 +325,10 @@ bool VkDemo::LoadModel(const char* filename, bool move_to_origin, model_s& model
     return Model_Load(full_filename, move_to_origin, model);
 }
 
-bool VkDemo::CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkDeviceSize req_size) const {
-    // The Vulkan spec states: If size is not equal to VK_WHOLE_SIZE, size must either be a multiple of VkPhysicalDeviceLimits::nonCoherentAtomSize, 
-        // or offset plus size must equal the size of memory
-    VkDeviceSize nonCoherentAtomSize = vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize;
-    VkDeviceSize aligned_req_size = req_size;
-
-    if (aligned_req_size % nonCoherentAtomSize) {
-        aligned_req_size = ((aligned_req_size / nonCoherentAtomSize) + 1) * nonCoherentAtomSize;
-    }
+bool VkDemo::CreateBuffer(vk_buffer_s& buffer, 
+    VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_prop_flags, VkDeviceSize req_size) const
+{
+    VkDeviceSize aligned_req_size = GetAlignedBufferSize(req_size);
 
     VkBufferCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -237,8 +353,7 @@ bool VkDemo::CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkDevic
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .pNext = nullptr,
         .allocationSize = mem_req.size,
-        .memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        .memoryTypeIndex = GetMemoryTypeIndex(mem_req.memoryTypeBits, mem_prop_flags)
     };
 
     if (VK_SUCCESS != vkAllocateMemory(vk_device_, &mem_alloc_info, nullptr, &buffer.memory_)) {
@@ -251,9 +366,9 @@ bool VkDemo::CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkDevic
         return false;
     }
 
-    buffer.buffer_info_.buffer = buffer.buffer_;
-    buffer.buffer_info_.offset = 0;
-    buffer.buffer_info_.range = aligned_req_size;
+    buffer.desc_buffer_info_.buffer = buffer.buffer_;
+    buffer.desc_buffer_info_.offset = 0;
+    buffer.desc_buffer_info_.range = aligned_req_size;
 
     return true;
 }
@@ -272,12 +387,12 @@ void VkDemo::DestroyBuffer(vk_buffer_s& buffer) const {
     memset(&buffer, 0, sizeof(buffer));
 }
 
-void VkDemo::UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const {
+bool VkDemo::UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const {
     void* data = nullptr;
-    VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.buffer_info_.offset, buffer.buffer_info_.range, 0, &data);
+    VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.desc_buffer_info_.offset, buffer.desc_buffer_info_.range, 0, &data);
     if (rt != VK_SUCCESS) {
         printf("[UpdateBuffer] vkMapMemory error\n");
-        return;
+        return false;
     }
 
     memcpy(data, host_data, host_data_size);
@@ -288,15 +403,20 @@ void VkDemo::UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t hos
     mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     mapped_range.pNext = nullptr;
     mapped_range.memory = buffer.memory_;
-    mapped_range.offset = buffer.buffer_info_.offset;
-    mapped_range.size = buffer.buffer_info_.range;
+    mapped_range.offset = buffer.desc_buffer_info_.offset;
+    mapped_range.size = buffer.desc_buffer_info_.range;
+
+    bool ok = true;
 
     rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
     if (rt != VK_SUCCESS) {
+        ok = false;
         printf("[UpdateBuffer] vkFlushMappedMemoryRanges error\n");
     }
 
     vkUnmapMemory(vk_device_, buffer.memory_);
+
+    return ok;
 }
 
 void* VkDemo::MapMemory(const vk_buffer_s& buffer) const {
@@ -312,244 +432,164 @@ void VkDemo::UnmapMemory(const vk_buffer_s& buffer) {
     vkUnmapMemory(vk_device_, buffer.memory_);
 }
 
-void VkDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
-    // to override by child class
-}
+// Staging buffer
+// https://vulkan-tutorial.com/Vertex_buffers/Staging_buffer
 
-void VkDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const {
-    // to override by child class
-}
-
-// descriptor set pool
-bool VkDemo::CreateDescriptorPools(
-    uint32_t max_uniform_buffer, uint32_t max_storage_buffer, uint32_t max_texture, uint32_t max_desp_set)
+bool VkDemo::CreateBufferAddInitData(vk_buffer_s& buffer, VkBufferUsageFlags usage_flags, 
+    const void* data, size_t data_size, bool staging) 
 {
-    VkDescriptorPoolCreateInfo create_info = {};
+    vk_buffer_s temp_buffer = {};
 
-    std::vector<VkDescriptorPoolSize> pool_size_array;
-
-    if (max_uniform_buffer) {
-        pool_size_array.push_back({
-            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = max_uniform_buffer
-        });
+    VkBufferUsageFlags temp_buffer_usage_flags = usage_flags;
+    if (staging) {
+        temp_buffer_usage_flags = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     }
 
-    if (max_storage_buffer) {
-        pool_size_array.push_back({
-            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = max_storage_buffer
-            });
-    }
-
-    if (max_texture) {
-        pool_size_array.push_back({
-            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = max_texture
-            });
-    }
-
-    create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    create_info.pNext = nullptr;
-    create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    create_info.maxSets = max_desp_set;    // is the maximum number of descriptor sets that can be allocated from the pool.
-    create_info.poolSizeCount = (uint32_t)pool_size_array.size();
-    create_info.pPoolSizes = pool_size_array.data();
-
-    return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool_);
-
-}
-
-void VkDemo::DestroyDescriptorPools() {
-    if (vk_descriptor_pool_) {
-        vkDestroyDescriptorPool(vk_device_, vk_descriptor_pool_, nullptr);
-        vk_descriptor_pool_ = VK_NULL_HANDLE;
-    }
-}
-
-// helper
-uint32_t VkDemo::GetMemoryTypeIndex(uint32_t memory_type_bits, 
-    VkMemoryPropertyFlags required_memory_properties) const
-{
-    uint32_t bit_mask = 1;
-    for (uint32_t i = 0; i < vk_physical_device_memory_properties_.memoryTypeCount; ++i) {
-        if (memory_type_bits & bit_mask) {
-            // support i's memory type
-            if ((vk_physical_device_memory_properties_.memoryTypes[i].propertyFlags & required_memory_properties)
-                == required_memory_properties) {
-                return i;
-            }
-        }
-        bit_mask <<= 1;
-    }
-
-    printf("Could not found memory type index match the request\n");
-    return 0xFFFFFFFF;
-}
-
-bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) const {
-    shader_module = VK_NULL_HANDLE;
-
-    char fullfilename[1024];
-    sprintf_s(fullfilename, "%s/%s", shaders_dir_, filename);
-
-    void* code = nullptr;
-    int32_t code_len = 0;
-    if (!File_LoadBinary32(fullfilename, code, code_len)) {
+    if (!CreateBuffer(temp_buffer, temp_buffer_usage_flags,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        data_size)) {
+        DestroyBuffer(temp_buffer);
         return false;
     }
 
-    VkShaderModuleCreateInfo create_info = {};
+    void* dst = MapMemory(temp_buffer);
+    if (!dst) {
+        return false;
+    }
 
-    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    create_info.pNext = nullptr;
-    create_info.flags = 0;
-    create_info.codeSize = (size_t)code_len;
-    create_info.pCode = (const uint32_t*)code;
+    memcpy(dst, data, data_size);
 
-    VkResult rt = vkCreateShaderModule(vk_device_, &create_info, nullptr, &shader_module);
+    UnmapMemory(temp_buffer);
 
-    File_FreeBinary(code);
+    if (!staging) {
+        buffer = temp_buffer;
+        return true;
+    }
 
-    return rt == VK_SUCCESS;
+    if (!CreateBuffer(buffer, usage_flags | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, data_size)) {
+        DestroyBuffer(buffer);
+        DestroyBuffer(temp_buffer);
+        return false;
+    }
+
+    VkCommandPool command_pool = vk_command_pool_transient_;
+
+    VkCommandBuffer cmd_buffer_copy_buffer = VK_NULL_HANDLE;
+
+    VkCommandBufferAllocateInfo cmd_buffer_alloc_info = {};
+
+    cmd_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmd_buffer_alloc_info.pNext = nullptr;
+    cmd_buffer_alloc_info.commandPool = command_pool;
+    cmd_buffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_buffer_alloc_info.commandBufferCount = 1;
+
+    if (VK_SUCCESS != vkAllocateCommandBuffers(vk_device_, &cmd_buffer_alloc_info, &cmd_buffer_copy_buffer)) {
+        DestroyBuffer(buffer);
+        DestroyBuffer(temp_buffer);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo cmdbuf_begin_info = {};
+
+    cmdbuf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cmdbuf_begin_info.pNext = nullptr;
+    cmdbuf_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    cmdbuf_begin_info.pInheritanceInfo = nullptr;
+
+    if (VK_SUCCESS != vkBeginCommandBuffer(cmd_buffer_copy_buffer, &cmdbuf_begin_info)) {
+        vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_copy_buffer);
+        DestroyBuffer(buffer);
+        DestroyBuffer(temp_buffer);
+        return false;
+    }
+
+    VkBufferCopy buffer_copy = {};
+
+    buffer_copy.srcOffset = 0;
+    buffer_copy.dstOffset = 0;
+    buffer_copy.size = data_size;
+
+    vkCmdCopyBuffer(cmd_buffer_copy_buffer, temp_buffer.buffer_, buffer.buffer_, 1, &buffer_copy);
+
+    if (VK_SUCCESS != vkEndCommandBuffer(cmd_buffer_copy_buffer)) {
+        vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_copy_buffer);
+        DestroyBuffer(buffer);
+        DestroyBuffer(temp_buffer);
+        return false;
+    }
+
+    SubmitCommandBufferAndWait(cmd_buffer_copy_buffer);
+
+    vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_copy_buffer);
+
+    // free staging buffer
+    DestroyBuffer(temp_buffer);
+
+    return true;
 }
 
-void VkDemo::SetTitle(const char* text) {
-#if defined(_WIN32)
-    char16_t buf[1024];
-    Str_UTF8ToUTF16(text, buf, 1024);
-
-    SetWindowText(hWnd_, (LPCTSTR)buf);
-#endif
-}
-
-void VkDemo::GetViewMatrix(glm::mat4& view_mat) const {
-    view_mat = glm::lookAt(camera_.pos_, camera_.target_, camera_.up_);
-}
-
-void VkDemo::GetModelMatrix(glm::mat4& model_mat) const {
-    if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
-        model_mat = glm::scale(glm::mat4(1.0f), glm::vec3(model_scale_));
+bool VkDemo::CreateVertexBuffer(vk_buffer_s& buffer, const void* data, size_t data_size, bool staging) {
+    if (data) {
+        return CreateBufferAddInitData(buffer, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, data, data_size, staging);
     }
     else {
-
-        model_mat = glm::scale(glm::mat4(1.0f),
-            glm::vec3(model_scale_));
-
-        model_mat = glm::rotate(model_mat,
-            glm::radians(-view_angles_[ANGLE_PITCH]),
-            glm::vec3(1.0f, 0.0f, 0.0f));
-
-        model_mat = glm::rotate(model_mat,
-            glm::radians(view_angles_[ANGLE_YAW]),
-            glm::vec3(0.0f, 0.0f, 1.0f));
+        return CreateBuffer(buffer, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, data_size);
     }
 }
 
-bool VkDemo::CreateDemoWindow() {
-#if defined(_WIN32)
-    WNDCLASSEX wc = {};
-
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = WndProc; 
-    wc.cbClsExtra = 0;
-    wc.cbWndExtra = sizeof(LONG_PTR);
-    wc.hInstance = hInstance_;
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.lpszClassName = NULL;    // no menu
-    wc.lpszClassName = cfg_demo_win_class_name_;
-    wc.hIconSm = LoadIcon(NULL, IDI_WINLOGO);
-
-    if (!RegisterClassEx(&wc)) {
-        return NULL;
+bool VkDemo::CreateIndexBuffer(vk_buffer_s& buffer, const void* data, size_t data_size, bool staging) {
+    if (data) {
+        return CreateBufferAddInitData(buffer, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, data, data_size, staging);
     }
-
-    DWORD dwExStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
-    DWORD dwStyle = WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-
-    RECT wnd_rect;
-    wnd_rect.left = 0;
-    wnd_rect.top = 0;
-    wnd_rect.right = cfg_viewport_cx_;
-    wnd_rect.bottom = cfg_viewport_cy_;
-
-    AdjustWindowRectEx(&wnd_rect, dwStyle, FALSE /* bMenu */, dwExStyle);
-
-    int wnd_cx = wnd_rect.right - wnd_rect.left;
-    int wnd_cy = wnd_rect.bottom - wnd_rect.top;
-
-    int screen_cx = GetSystemMetrics(SM_CXSCREEN);
-    int screen_cy = GetSystemMetrics(SM_CYSCREEN);
-
-    int wnd_x = (screen_cx - wnd_cx) / 2;
-    int wnd_y = (screen_cy - wnd_cy) / 2;
-
-    HWND hWnd = CreateWindowEx(dwExStyle, cfg_demo_win_class_name_, cfg_demo_win_class_name_, dwStyle,
-        wnd_x, wnd_y, wnd_cx, wnd_cy, NULL /* hWndParent */, NULL /*hMenu*/, hInstance_, NULL /*lpParam*/);
-
-    if (hWnd) {
-        hWnd_ = hWnd;
-
-        SetWindowLongPtr(hWnd, 0, (LONG_PTR)this);
-
-        ShowWindow(hWnd, SW_SHOW);
-        SetForegroundWindow(hWnd);
-        SetFocus(hWnd);
-    }
-
-    return hWnd != NULL;
-#else
-    return false;   // TODO: other platform
-#endif
-}
-
-void VkDemo::RotateCamera() {
-    if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
-
-        // normalize yaw in range [0, 360)
-        while (view_angles_[ANGLE_YAW] >= 360.0f) {
-            view_angles_[ANGLE_YAW] -= 360.0f;
-        }
-
-        while (view_angles_[ANGLE_YAW] < 0.0f) {
-            view_angles_[ANGLE_YAW] += 360.0f;
-        }
-
-        // clamp pitch to avoid gimbal lock
-        if (view_angles_[ANGLE_PITCH] > 89.0f) {
-            view_angles_[ANGLE_PITCH] = 89.0f;
-        }
-
-        if (view_angles_[ANGLE_PITCH] < -89.0f) {
-            view_angles_[ANGLE_PITCH] = -89.0f;
-        }
-
-        glm::vec4 forward4 = glm::rotate(glm::mat4(1.0),
-            glm::radians(view_angles_[ANGLE_YAW]), glm::vec3(0.0f, 0.0f, 1.0f)) * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
-
-        glm::vec3 right = glm::cross(glm::vec3(forward4), camera_.up_);
-
-        forward4 = glm::rotate(glm::mat4(1.0),
-            glm::radians(view_angles_[ANGLE_PITCH]), right) * forward4;
-
-        camera_.target_ = camera_.pos_ + glm::vec3(forward4);
-
+    else {
+        return CreateBuffer(buffer, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, data_size);
     }
 }
 
-void VkDemo::KeyF2Down() {
-    // to override
+bool VkDemo::CreateSampler(VkFilter mag_filter, VkFilter min_filter, VkSamplerMipmapMode mipmap_mode,
+    VkSamplerAddressMode address_mode, VkSampler& sampler)
+{
+    VkSamplerCreateInfo create_info = {};
+
+    create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    create_info.pNext = nullptr;
+    create_info.flags = 0;
+    create_info.magFilter = mag_filter;
+    create_info.minFilter = min_filter;
+    create_info.mipmapMode = mipmap_mode;
+    create_info.addressModeU = address_mode;
+    create_info.addressModeV = address_mode;
+    create_info.addressModeW = address_mode;
+    create_info.mipLodBias = 0.0f;
+    create_info.anisotropyEnable = VK_FALSE;
+    create_info.maxAnisotropy = 1.0f;
+    create_info.compareEnable = VK_FALSE;
+    create_info.compareOp = VK_COMPARE_OP_NEVER;
+    create_info.minLod = 0.0f;
+    create_info.maxLod = 1.0f;
+    create_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; // if clamp to border
+    create_info.unnormalizedCoordinates = VK_FALSE;
+
+    return VK_SUCCESS == vkCreateSampler(vk_device_, &create_info, nullptr, &sampler);
 }
 
-// helper
+void VkDemo::DestroySampler(VkSampler& sampler) {
+    if (sampler) {
+        vkDestroySampler(vk_device_, sampler, nullptr);
+        sampler = VK_NULL_HANDLE;
+    }
+}
 
-bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling tiling, 
-    VkImageUsageFlags usage, uint32_t width, uint32_t height, 
+bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling tiling,
+    VkImageUsageFlags usage, uint32_t width, uint32_t height,
     VkMemoryPropertyFlags memory_property_flags,
-    VkImageAspectFlags image_aspect_flags) 
+    VkImageAspectFlags image_aspect_flags,
+    VkSampler sampler,
+    VkImageLayout image_layout)
 {
     VkImageCreateInfo image_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -616,27 +656,35 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
         return false;
     }
 
+    vk_image.desc_image_info_.sampler = sampler;
+    vk_image.desc_image_info_.imageView = vk_image.image_view_;
+    vk_image.desc_image_info_.imageLayout = image_layout;
+
     return true;
 }
 
 void VkDemo::Destroy2DImage(vk_image_s& vk_image) {
     if (vk_image.image_view_) {
         vkDestroyImageView(vk_device_, vk_image.image_view_, nullptr);
-        vk_image.image_view_ = VK_NULL_HANDLE;
     }
 
     if (vk_image.memory_) {
         vkFreeMemory(vk_device_, vk_image.memory_, nullptr);
-        vk_image.memory_ = VK_NULL_HANDLE;
     }
 
     if (vk_image.image_) {
         vkDestroyImage(vk_device_, vk_image.image_, nullptr);
-        vk_image.image_ = VK_NULL_HANDLE;
     }
+
+    memset(&vk_image, 0, sizeof(vk_image));
 }
 
-bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFlags image_usage, vk_image_s& vk_image) {
+bool VkDemo::Load2DTexture(const char* filename,
+    VkFormat format, VkImageUsageFlags image_usage,
+    VkSampler sampler, VkImageLayout image_layout, vk_image_s& vk_image) 
+{
+    memset(&vk_image, 0, sizeof(vk_image));
+    
     VkFormatProperties format_properties;
     vkGetPhysicalDeviceFormatProperties(vk_physical_device_, format, &format_properties);
 
@@ -646,7 +694,14 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
     }
 
     char full_filename[MAX_PATH];
-    Str_SPrintf(full_filename, MAX_PATH, "%s/%s", textures_dir_, filename);
+
+    if (filename[0] == '/' || filename[1] == ':') {
+        Str_Copy(full_filename, MAX_PATH, filename);    // absolute push
+    }
+    else {
+        // relative path, load from textures folder
+        Str_SPrintf(full_filename, MAX_PATH, "%s/%s", textures_dir_, filename);
+    }
 
     image_s pic = {};
     if (!Img_Load(full_filename, pic)) {
@@ -662,16 +717,31 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
     if (!Create2DImage(vk_image, format, VK_IMAGE_TILING_LINEAR, image_usage,
         (uint32_t)pic.width_, (uint32_t)pic.height_,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT)) 
+        VK_IMAGE_ASPECT_COLOR_BIT, sampler, image_layout))
     {
         Img_Free(pic);
+        return false;
+    }
+
+    vk_image.width_ = (uint32_t)pic.width_;
+    vk_image.height_ = (uint32_t)pic.height_;
+
+    bool ok = Update2DTexture(pic, vk_image);
+
+    Img_Free(pic);
+
+    return ok;
+}
+
+bool VkDemo::Update2DTexture(const image_s& pic, vk_image_s& vk_image) {
+    if (vk_image.width_ != (uint32_t)pic.width_ || vk_image.height_ != (uint32_t)pic.height_) {
+        printf("image size mismatch\n");
         return false;
     }
 
     // copy contents
     void* mapped = nullptr;
     if (VK_SUCCESS != vkMapMemory(vk_device_, vk_image.memory_, 0, vk_image.memory_size_, 0 /* flags */, &mapped)) {
-        Img_Free(pic);
         return false;
     }
 
@@ -679,9 +749,9 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
 
     vkUnmapMemory(vk_device_, vk_image.memory_);
 
-    Img_Free(pic);
-
     // change layout from VK_IMAGE_LAYOUT_UNDEFINED -> VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+
+    VkCommandPool command_pool = vk_command_pool_transient_;
 
     VkCommandBuffer cmd_buffer_load_tex = VK_NULL_HANDLE;
 
@@ -689,7 +759,7 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
 
     cmd_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmd_buffer_alloc_info.pNext = nullptr;
-    cmd_buffer_alloc_info.commandPool = vk_command_pool_;
+    cmd_buffer_alloc_info.commandPool = command_pool;
     cmd_buffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_buffer_alloc_info.commandBufferCount = 1;
 
@@ -701,11 +771,11 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
 
     cmdbuf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cmdbuf_begin_info.pNext = nullptr;
-    cmdbuf_begin_info.flags = 0;
+    cmdbuf_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     cmdbuf_begin_info.pInheritanceInfo = nullptr;
 
     if (VK_SUCCESS != vkBeginCommandBuffer(cmd_buffer_load_tex, &cmdbuf_begin_info)) {
-        vkFreeCommandBuffers(vk_device_, vk_command_pool_, 1, &cmd_buffer_load_tex);
+        vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
         return false;
     }
 
@@ -734,8 +804,41 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
         0 /* bufferMemoryBarrierCount */, nullptr /* pBufferMemoryBarries */,
         1, &image_memory_barrier);
 
-    vkEndCommandBuffer(cmd_buffer_load_tex);
+    if (VK_SUCCESS != vkEndCommandBuffer(cmd_buffer_load_tex)) {
+        vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
+        return false;
+    }
 
+    SubmitCommandBufferAndWait(cmd_buffer_load_tex);
+
+    vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
+
+    return true;
+}
+
+void VkDemo::DestroyFramebuffer(VkFramebuffer& vk_framebuffer) {
+    if (vk_framebuffer) {
+        vkDestroyFramebuffer(vk_device_, vk_framebuffer, nullptr);
+        vk_framebuffer = VK_NULL_HANDLE;
+    }
+}
+
+void VkDemo::DestroyRenderPass(VkRenderPass& vk_render_pass) {
+    if (vk_render_pass) {
+        vkDestroyRenderPass(vk_device_, vk_render_pass, nullptr);
+        vk_render_pass = VK_NULL_HANDLE;
+    }
+}
+
+void VkDemo::AddAdditionalInstanceExtensions(std::vector<const char*>& extensions) const {
+    // to override by child class
+}
+
+void VkDemo::AddAdditionalDeviceExtensions(std::vector<const char*>& extensions) const {
+    // to override by child class
+}
+
+void VkDemo::SubmitCommandBufferAndWait(VkCommandBuffer command_buffer) {
     VkFence temp_fence = VK_NULL_HANDLE;
 
     VkFenceCreateInfo fence_create_info = {};
@@ -745,8 +848,8 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
     fence_create_info.flags = 0;
 
     if (VK_SUCCESS != vkCreateFence(vk_device_, &fence_create_info, nullptr, &temp_fence)) {
-        vkFreeCommandBuffers(vk_device_, vk_command_pool_, 1, &cmd_buffer_load_tex);
-        return false;
+        printf("vkCreateFence error\n");
+        return;
     }
 
     VkSubmitInfo queue_submit_info = {};
@@ -757,27 +860,621 @@ bool VkDemo::Load2DTexture(const char* filename, VkFormat format, VkImageUsageFl
     queue_submit_info.pWaitSemaphores = nullptr;
     queue_submit_info.pWaitDstStageMask = nullptr;
     queue_submit_info.commandBufferCount = 1;
-    queue_submit_info.pCommandBuffers = &cmd_buffer_load_tex;
+    queue_submit_info.pCommandBuffers = &command_buffer;
     queue_submit_info.signalSemaphoreCount = 0;
     queue_submit_info.pSignalSemaphores = nullptr;
 
+    // sumit to graphics queue
     if (VK_SUCCESS != vkQueueSubmit(vk_graphics_queue_, 1, &queue_submit_info, temp_fence)) {
         vkDestroyFence(vk_device_, temp_fence, nullptr);
-        vkFreeCommandBuffers(vk_device_, vk_command_pool_, 1, &cmd_buffer_load_tex);
-        return false;
+        printf("vkQueueSubmit error\n");
+        return;
     }
 
     if (VK_SUCCESS != vkWaitForFences(vk_device_, 1, &temp_fence, VK_TRUE, UINT64_MAX)) {
         vkDestroyFence(vk_device_, temp_fence, nullptr);
-        vkFreeCommandBuffers(vk_device_, vk_command_pool_, 1, &cmd_buffer_load_tex);
-        return false;
+        printf("vkWaitForFences error\n");
+        return;
     }
 
     vkDestroyFence(vk_device_, temp_fence, nullptr);
-    vkFreeCommandBuffers(vk_device_, vk_command_pool_, 1, &cmd_buffer_load_tex);
-
-    return true;
 }
+
+// helper
+uint32_t VkDemo::GetMemoryTypeIndex(uint32_t memory_type_bits, 
+    VkMemoryPropertyFlags required_memory_properties) const
+{
+    uint32_t bit_mask = 1;
+    for (uint32_t i = 0; i < vk_physical_device_memory_properties_.memoryTypeCount; ++i) {
+        if (memory_type_bits & bit_mask) {
+            // support i's memory type
+            if ((vk_physical_device_memory_properties_.memoryTypes[i].propertyFlags & required_memory_properties)
+                == required_memory_properties) {
+                return i;
+            }
+        }
+        bit_mask <<= 1;
+    }
+
+    printf("Could not found memory type index match the request\n");
+    return 0xFFFFFFFF;
+}
+
+bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) const {
+    shader_module = VK_NULL_HANDLE;
+
+    char fullfilename[1024];
+    sprintf_s(fullfilename, "%s/%s", shaders_dir_, filename);
+
+    void* code = nullptr;
+    int32_t code_len = 0;
+    if (!File_LoadBinary32(fullfilename, code, code_len)) {
+        return false;
+    }
+
+    VkShaderModuleCreateInfo create_info = {};
+
+    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    create_info.pNext = nullptr;
+    create_info.flags = 0;
+    create_info.codeSize = (size_t)code_len;
+    create_info.pCode = (const uint32_t*)code;
+
+    VkResult rt = vkCreateShaderModule(vk_device_, &create_info, nullptr, &shader_module);
+
+    File_FreeBinary(code);
+
+    return rt == VK_SUCCESS;
+}
+
+void VkDemo::SetTitle(const char* text) {
+#if defined(_WIN32)
+    char16_t buf[1024];
+    Str_UTF8ToUTF16(text, buf, 1024);
+
+    SetWindowText(hWnd_, (LPCTSTR)buf);
+#endif
+}
+
+void VkDemo::GetViewMatrix(glm::mat4& view_mat) const {
+    view_mat = glm::lookAt(camera_.pos_, camera_.target_, camera_.up_);
+}
+
+void VkDemo::GetModelMatrix(glm::mat4& model_mat) const {
+    glm::mat scale_mat = glm::scale(glm::mat4(1.0f), glm::vec3(model_scale_));
+
+    if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
+        model_mat = scale_mat;
+    }
+    else {
+        model_mat = (*model_rotate_mat_) * scale_mat;
+    }
+}
+
+bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& params,
+    VkPipeline& pipeline) 
+{
+    // check vertex format
+    std::vector<VkVertexInputAttributeDescription> vertex_attribute_descriptions;
+
+    vertex_attribute_descriptions.push_back(
+        {
+            .location = 0,
+            .binding = 0,
+            .format = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset = 0
+        }
+    );
+
+    uint32_t next_location = 1;
+
+    uint32_t stride = (uint32_t)sizeof(vertex_pos_normal_s);
+    uint32_t normal_offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_);
+    uint32_t color_offset = 0;
+    uint32_t uv_offset = 0;
+    uint32_t tangent_offset = 0;
+
+    switch (params.vertex_format_) {
+    case vertex_format_t::VF_POS:
+        stride = (uint32_t)sizeof(vertex_pos_s);
+        break;
+    case vertex_format_t::VF_POS_COLOR:
+        stride = (uint32_t)sizeof(vertex_pos_color_s);
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_COLOR) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_color_s, color_)
+                }
+            );
+        }
+        break;
+    case vertex_format_t::VF_POS_NORMAL:
+        stride = (uint32_t)sizeof(vertex_pos_normal_s);
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_NORMAL) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_)
+                }
+            );
+        }
+        break;
+    case vertex_format_t::VF_POS_NORMAL_COLOR:
+        stride = (uint32_t)sizeof(vertex_pos_normal_color_s);
+        
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_NORMAL) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_color_s, normal_)
+                }
+            );
+        }
+
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_COLOR) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_color_s, color_)
+                }
+            );
+        }
+
+        break;
+    case vertex_format_t::VF_POS_NORMAL_UV:
+        stride = (uint32_t)sizeof(vertex_pos_normal_uv_s);
+
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_NORMAL) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_s, normal_)
+                }
+            );
+        }
+
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_UV) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_s, uv_)
+                }
+            );
+        }
+
+        break;
+    case vertex_format_t::VF_POS_NORMAL_UV_TANGENT:
+        stride = (uint32_t)sizeof(vertex_pos_normal_uv_tangent_s);
+
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_NORMAL) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, normal_)
+                }
+            );
+        }
+
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_UV) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, uv_)
+                }
+            );
+        }
+
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_TANGENT) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_normal_uv_tangent_s, tangent_)
+                }
+            );
+        }
+
+        break;
+    default:
+        printf("Unknown vertex format %d\n", (int)params.vertex_format_);
+        return false;
+    }
+
+    if (params.instance_format_ == instance_format_t::INST_POS_VEC3) {
+        vertex_attribute_descriptions.push_back(
+            {
+                .location = next_location++,
+                .binding = 1,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = 0
+            }
+        );
+        vertex_attribute_descriptions.push_back(
+            {
+                .location = next_location++,
+                .binding = 1,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = GET_FIELD_OFFSET(instance_pos_vec3_s, vec3_)
+            }
+        );
+    }
+    else if (params.instance_format_ == instance_format_t::INST_POS_VEC4) {
+        vertex_attribute_descriptions.push_back(
+            {
+                .location = next_location++,
+                .binding = 1,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = 0
+            }
+        );
+        vertex_attribute_descriptions.push_back(
+            {
+                .location = next_location++,
+                .binding = 1,
+                .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = GET_FIELD_OFFSET(instance_pos_vec4_s, vec4_)
+            }
+        );
+    }
+
+    // load shader
+    VkShaderModule vert_shader = VK_NULL_HANDLE, frag_shader = VK_NULL_HANDLE;
+
+    LoadShader(params.vertex_shader_filename_, vert_shader);
+    LoadShader(params.framgment_shader_filename_, frag_shader);
+
+    if (!vert_shader || !frag_shader) {
+        if (vert_shader) {
+            vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
+        }
+
+        if (frag_shader) {
+            vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
+        }
+        return false;
+    }
+
+    VkGraphicsPipelineCreateInfo create_info = {};
+
+    create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    create_info.pNext = nullptr;
+    create_info.flags = 0;
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages;
+
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].pNext = nullptr;
+    stages[0].flags = 0;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert_shader;
+    stages[0].pName = "main";
+    stages[0].pSpecializationInfo = nullptr;
+
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].pNext = nullptr;
+    stages[1].flags = 0;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag_shader;
+    stages[1].pName = "main";
+    stages[1].pSpecializationInfo = nullptr;
+
+    create_info.stageCount = (uint32_t)stages.size();
+    create_info.pStages = stages.data();
+
+    // -- pVertexInputState --
+
+    std::vector<VkVertexInputBindingDescription> vertex_binding_description;
+
+    vertex_binding_description.push_back(
+        {
+            .binding = 0,	// binding point 0
+            .stride = stride,
+            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX	// per-vertex rate
+        }
+    );
+
+    if (params.instance_format_ == instance_format_t::INST_POS_VEC3) {
+        vertex_binding_description.push_back(
+            {
+                .binding = 1,	// binding point 1
+                .stride = (uint32_t)sizeof(instance_pos_vec3_s),
+                .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE	// per-instance rate
+            }
+        );
+    }
+    else if (params.instance_format_ == instance_format_t::INST_POS_VEC4) {
+        vertex_binding_description.push_back(
+            {
+                .binding = 1,	// binding point 1
+                .stride = (uint32_t)sizeof(instance_pos_vec4_s),
+                .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE	// per-instance rate
+            }
+        );
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .vertexBindingDescriptionCount = (uint32_t)vertex_binding_description.size(),
+        .pVertexBindingDescriptions = vertex_binding_description.data(),
+        .vertexAttributeDescriptionCount = (uint32_t)vertex_attribute_descriptions.size(),
+        .pVertexAttributeDescriptions = vertex_attribute_descriptions.data()
+    };
+
+    create_info.pVertexInputState = &vertex_input_state;
+
+    // -- pInputAssemblyState --
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .topology = params.primitive_topology_,
+        .primitiveRestartEnable = params.primitive_restart_enable_
+    };
+    create_info.pInputAssemblyState = &input_assembly_state;
+
+    // -- pTessellationState --
+    create_info.pTessellationState = nullptr;   // no tessellation
+
+    // -- pViewportState --
+    VkPipelineViewportStateCreateInfo viewport_state = {};
+
+    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.pNext = nullptr;
+    viewport_state.flags = 0;
+    viewport_state.viewportCount = 1;
+    viewport_state.pViewports = nullptr;    // overriden by dynamic state
+    viewport_state.scissorCount = 1;
+    viewport_state.pScissors = nullptr;     // overriden by dynamic state
+
+    create_info.pViewportState = &viewport_state;
+
+    // -- pRasterizationState --
+    VkPipelineRasterizationStateCreateInfo rasterization_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = params.polygon_mode_,
+        .cullMode = params.cull_mode_,
+        .frontFace = params.front_face_,
+        .depthBiasEnable = VK_FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp = 0.0f,
+        .depthBiasSlopeFactor = 0.0f,
+        .lineWidth = 1.0f
+    };
+
+    create_info.pRasterizationState = &rasterization_state;
+
+    // -- pMultisampleState --
+    VkPipelineMultisampleStateCreateInfo multisample_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .sampleShadingEnable = VK_FALSE,
+        .minSampleShading = 0.0f,
+        .pSampleMask = nullptr,
+        .alphaToCoverageEnable = VK_FALSE,
+        .alphaToOneEnable = VK_FALSE
+    };
+
+    create_info.pMultisampleState = &multisample_state;
+
+    // -- pDepthStencilState --
+
+    VkStencilOpState stencil_op_state = {
+        .failOp = VK_STENCIL_OP_KEEP,
+        .passOp = VK_STENCIL_OP_KEEP,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .compareMask = 0,
+        .writeMask = 0,
+        .reference = 0
+    };
+
+    VkPipelineDepthStencilStateCreateInfo depthstencil_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
+        .front = stencil_op_state,
+        .back = stencil_op_state,
+        .minDepthBounds = 0.0,
+        .maxDepthBounds = 1.0
+    };
+
+    create_info.pDepthStencilState = &depthstencil_state;
+
+    // -- pColorBlendState --
+    VkPipelineColorBlendStateCreateInfo color_blend_state = {};
+
+    VkPipelineColorBlendAttachmentState blend_attr_attachment = {};
+    blend_attr_attachment.colorWriteMask = 0xf;
+    blend_attr_attachment.blendEnable = VK_FALSE;
+
+    color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend_state.pNext = nullptr;
+    color_blend_state.flags = 0;
+    color_blend_state.logicOpEnable = VK_FALSE;
+    color_blend_state.logicOp = VK_LOGIC_OP_COPY;
+    color_blend_state.attachmentCount = 1;
+    color_blend_state.pAttachments = &blend_attr_attachment;
+
+    create_info.pColorBlendState = &color_blend_state;
+
+    // -- pDynamicState --
+
+    VkPipelineDynamicStateCreateInfo dynamic_state = {};
+
+    std::vector<VkDynamicState> dynamic_state_enables;
+    dynamic_state_enables.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+    dynamic_state_enables.push_back(VK_DYNAMIC_STATE_SCISSOR);
+
+    dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.pNext = nullptr;
+    dynamic_state.flags = 0;
+    dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_state_enables.size());
+    dynamic_state.pDynamicStates = dynamic_state_enables.data();
+
+    create_info.pDynamicState = &dynamic_state;
+
+    create_info.layout = params.pipeline_layout_;
+    create_info.renderPass = params.render_pass_;
+
+    create_info.subpass = 0;
+    create_info.basePipelineHandle = VK_NULL_HANDLE;
+    create_info.basePipelineIndex = 0;
+
+    VkResult rt = vkCreateGraphicsPipelines(vk_device_, vk_pipeline_cache_,
+        1, &create_info, nullptr, &pipeline);
+
+    // free shader modules
+    vkDestroyShaderModule(vk_device_, vert_shader, nullptr);
+    vkDestroyShaderModule(vk_device_, frag_shader, nullptr);
+
+    return rt == VK_SUCCESS;
+}
+
+bool VkDemo::CreateDemoWindow() {
+#if defined(_WIN32)
+    WNDCLASSEX wc = {};
+
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc; 
+    wc.cbClsExtra = 0;
+    wc.cbWndExtra = sizeof(LONG_PTR);
+    wc.hInstance = hInstance_;
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.lpszClassName = NULL;    // no menu
+    wc.lpszClassName = cfg_demo_win_class_name_;
+    wc.hIconSm = LoadIcon(NULL, IDI_WINLOGO);
+
+    if (!RegisterClassEx(&wc)) {
+        return NULL;
+    }
+
+    DWORD dwExStyle = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+    DWORD dwStyle = WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+
+    RECT wnd_rect;
+    wnd_rect.left = 0;
+    wnd_rect.top = 0;
+    wnd_rect.right = cfg_viewport_cx_;
+    wnd_rect.bottom = cfg_viewport_cy_;
+
+    AdjustWindowRectEx(&wnd_rect, dwStyle, FALSE /* bMenu */, dwExStyle);
+
+    int wnd_cx = wnd_rect.right - wnd_rect.left;
+    int wnd_cy = wnd_rect.bottom - wnd_rect.top;
+
+    int screen_cx = GetSystemMetrics(SM_CXSCREEN);
+    int screen_cy = GetSystemMetrics(SM_CYSCREEN);
+
+    int wnd_x = (screen_cx - wnd_cx) / 2;
+    int wnd_y = (screen_cy - wnd_cy) / 2;
+
+    HWND hWnd = CreateWindowEx(dwExStyle, cfg_demo_win_class_name_, cfg_demo_win_class_name_, dwStyle,
+        wnd_x, wnd_y, wnd_cx, wnd_cy, NULL /* hWndParent */, NULL /*hMenu*/, hInstance_, NULL /*lpParam*/);
+
+    if (hWnd) {
+        hWnd_ = hWnd;
+
+        SetWindowLongPtr(hWnd, 0, (LONG_PTR)this);
+
+        ShowWindow(hWnd, SW_SHOW);
+        SetForegroundWindow(hWnd);
+        SetFocus(hWnd);
+    }
+
+    return hWnd != NULL;
+#else
+    return false;   // TODO: other platform
+#endif
+}
+
+void VkDemo::CursorRotate(float delta_yaw, float delta_pitch) {
+    if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
+
+        view_angles_[ANGLE_YAW] += delta_yaw * 0.5f;
+        view_angles_[ANGLE_PITCH] += delta_pitch * 0.5f;
+
+        // normalize yaw in range [0, 360)
+        while (view_angles_[ANGLE_YAW] >= 360.0f) {
+            view_angles_[ANGLE_YAW] -= 360.0f;
+        }
+
+        while (view_angles_[ANGLE_YAW] < 0.0f) {
+            view_angles_[ANGLE_YAW] += 360.0f;
+        }
+
+        // clamp pitch to avoid gimbal lock
+        if (view_angles_[ANGLE_PITCH] > 89.0f) {
+            view_angles_[ANGLE_PITCH] = 89.0f;
+        }
+
+        if (view_angles_[ANGLE_PITCH] < -89.0f) {
+            view_angles_[ANGLE_PITCH] = -89.0f;
+        }
+
+        glm::vec4 forward4 = glm::rotate(glm::mat4(1.0),
+            glm::radians(view_angles_[ANGLE_YAW]), glm::vec3(0.0f, 0.0f, 1.0f)) * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f);
+
+        glm::vec3 right = glm::cross(glm::vec3(forward4), camera_.up_);
+
+        forward4 = glm::rotate(glm::mat4(1.0),
+            glm::radians(view_angles_[ANGLE_PITCH]), right) * forward4;
+
+        camera_.target_ = camera_.pos_ + glm::vec3(forward4);
+
+    }
+    else {
+        // quaternion rotation
+        glm::quat yaw_quat = glm::angleAxis(glm::radians(delta_yaw), glm::vec3(0.f, 0.f, 1.f));
+        glm::quat pitch_quat = glm::angleAxis(-glm::radians(delta_pitch), glm::vec3(1.0f, 0.0f, 0.0f));
+        
+        // convert quaternion to matrix
+        glm::mat4 delta_rotate_mat = glm::mat4_cast(pitch_quat * yaw_quat);
+
+        // concatenate rotation
+        glm::mat4 cur_model_rotate_mat = *model_rotate_mat_;
+        *model_rotate_mat_ = delta_rotate_mat * cur_model_rotate_mat;
+    }
+}
+
+void VkDemo::FuncKeyDown(uint32_t key) {
+    // to override
+}
+
+// helper
 
 void VkDemo::DestroyDescriptorSetLayout(VkDescriptorSetLayout& descriptor_set_layout) {
     if (descriptor_set_layout) {
@@ -847,10 +1544,7 @@ LRESULT VkDemo::DemoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             float delta_yaw = (float)delta_x;
             float delta_pitch = (float)delta_y;
 
-            view_angles_[ANGLE_YAW] += delta_yaw * 0.5f;
-            view_angles_[ANGLE_PITCH] += delta_pitch * 0.5f;
-
-            RotateCamera();
+            CursorRotate(delta_yaw, delta_pitch);
 
             cursor_x_ = new_cursor_x;
             cursor_y_ = new_cursor_y;
@@ -861,8 +1555,19 @@ LRESULT VkDemo::DemoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     case WM_KEYDOWN:
         switch (wParam) {
+        case VK_F1:
         case VK_F2:
-            KeyF2Down();
+        case VK_F3:
+        case VK_F4:
+        case VK_F5:
+        case VK_F6:
+        case VK_F7:
+        case VK_F8:
+        case VK_F9:
+        case VK_F10:
+        case VK_F11:
+        case VK_F12:
+            FuncKeyDown(wParam);
             InvalidateRect(hWnd, nullptr, FALSE);
             break;
         case KEY_W:
@@ -1064,6 +1769,8 @@ bool VkDemo::SelectPhysicalDevice() {
         for (uint32_t j = 0; j < queue_family_property_count; ++j) {
             VkQueueFamilyProperties& p = queue_family_properties[j];
             if (p.queueFlags & VK_QUEUE_GRAPHICS_BIT) { // that queue family support graphics
+                
+                // implicitly support VK_QUEUE_TRANSFER_BIT operator
                 vk_physical_device_graphics_queue_family_index_ = j;
                 support_graphics = true;
                 break;
@@ -1089,6 +1796,7 @@ bool VkDemo::SelectPhysicalDevice() {
 
             printf("DeviceName = \"%s\"\n", vk_physical_device_properties2_.properties.deviceName);
             printf("nonCoherentAtomSize = %llu\n", vk_physical_device_properties2_.properties.limits.nonCoherentAtomSize);
+            printf("minUniformBufferOffsetAlignment = %llu\n", vk_physical_device_properties2_.properties.limits.minUniformBufferOffsetAlignment);
             printf("maxTaskWorkGroupCount = [%u,%u,%u]\n", 
                 vk_physical_device_mesh_shader_propertices_.maxTaskWorkGroupCount[0],
                 vk_physical_device_mesh_shader_propertices_.maxTaskWorkGroupCount[1],
@@ -1787,13 +2495,6 @@ bool VkDemo::CreateRenderPass() {
     return true;
 }
 
-void VkDemo::DestroyRenderPass() {
-    if (vk_render_pass_) {
-        vkDestroyRenderPass(vk_device_, vk_render_pass_, nullptr);
-        vk_render_pass_ = VK_NULL_HANDLE;
-    }
-}
-
 // framebuffers
 bool VkDemo::CreateFramebuffers() {
     vk_framebuffer_count_ = 0;
@@ -1830,43 +2531,40 @@ bool VkDemo::CreateFramebuffers() {
 
 void VkDemo::DestroyFramebuffers() {
     for (int i = 0; i < vk_framebuffer_count_; ++i) {
-        if (vk_framebuffers_[i]) {
-            vkDestroyFramebuffer(vk_device_, vk_framebuffers_[i], nullptr);
-            vk_framebuffers_[i] = VK_NULL_HANDLE;
-        }
+        DestroyFramebuffer(vk_framebuffers_[i]);
     }
     vk_framebuffer_count_ = 0;
 }
 
 // command pool
-bool VkDemo::CreateCommandPool() {
-    VkCommandPoolCreateInfo command_pool_create_info = {};
+bool VkDemo::CreateCommandPools() {
+    auto CreateCommandPool = [this](VkCommandPoolCreateFlags flags, VkCommandPool& command_pool) -> bool {
+        VkCommandPoolCreateInfo command_pool_create_info = {};
 
-    command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_create_info.pNext = nullptr;
-    // allow reset individuel command buffer var vkResetCommandBuffer
-    command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    // command buffers from this pool can only be submitted no queues 
-    //   corresponding to this queue family.
-    command_pool_create_info.queueFamilyIndex = vk_physical_device_graphics_queue_family_index_;
+        command_pool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        command_pool_create_info.pNext = nullptr;
+        command_pool_create_info.flags = flags;
+            // command buffers from this pool can only be submitted no queues 
+            //   corresponding to this queue family.
+        command_pool_create_info.queueFamilyIndex = vk_physical_device_graphics_queue_family_index_;
 
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    VkResult rt = vkCreateCommandPool(vk_device_, &command_pool_create_info, nullptr, &command_pool);
+        return VK_SUCCESS == vkCreateCommandPool(vk_device_, &command_pool_create_info, nullptr, &command_pool);
+    };
 
-    if (rt == VK_SUCCESS) {
-        vk_command_pool_ = command_pool;
-        return true;
-    }
-    else {
-        return false;
-    }
+    return CreateCommandPool(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, vk_command_pool_)
+        && CreateCommandPool(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, vk_command_pool_transient_);
 }
 
-void VkDemo::DestroyCommandPool() {
-    if (vk_command_pool_) {
-        vkDestroyCommandPool(vk_device_, vk_command_pool_, nullptr);
-        vk_command_pool_ = VK_NULL_HANDLE;
-    }
+void VkDemo::DestroyCommandPools() {
+    auto DestroyCommandPool = [this](VkCommandPool & command_pool) {
+        if (command_pool) {
+            vkDestroyCommandPool(vk_device_, command_pool, nullptr);
+            command_pool = VK_NULL_HANDLE;
+        }
+    };
+
+    DestroyCommandPool(vk_command_pool_transient_);
+    DestroyCommandPool(vk_command_pool_);
 }
 
 // command buffers
@@ -1915,6 +2613,53 @@ void VkDemo::DestroyPipelineCache() {
     if (vk_pipeline_cache_) {
         vkDestroyPipelineCache(vk_device_, vk_pipeline_cache_, nullptr);
         vk_pipeline_cache_ = VK_NULL_HANDLE;
+    }
+}
+
+// descriptor set pool
+bool VkDemo::CreateDescriptorPools(
+    uint32_t max_uniform_buffer, uint32_t max_storage_buffer, uint32_t max_texture, uint32_t max_desp_set)
+{
+    VkDescriptorPoolCreateInfo create_info = {};
+
+    std::vector<VkDescriptorPoolSize> pool_size_array;
+
+    if (max_uniform_buffer) {
+        pool_size_array.push_back({
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = max_uniform_buffer
+            });
+    }
+
+    if (max_storage_buffer) {
+        pool_size_array.push_back({
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = max_storage_buffer
+            });
+    }
+
+    if (max_texture) {
+        pool_size_array.push_back({
+            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = max_texture
+            });
+    }
+
+    create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    create_info.pNext = nullptr;
+    create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    create_info.maxSets = max_desp_set;    // is the maximum number of descriptor sets that can be allocated from the pool.
+    create_info.poolSizeCount = (uint32_t)pool_size_array.size();
+    create_info.pPoolSizes = pool_size_array.data();
+
+    return VK_SUCCESS == vkCreateDescriptorPool(vk_device_, &create_info, nullptr, &vk_descriptor_pool_);
+
+}
+
+void VkDemo::DestroyDescriptorPools() {
+    if (vk_descriptor_pool_) {
+        vkDestroyDescriptorPool(vk_device_, vk_descriptor_pool_, nullptr);
+        vk_descriptor_pool_ = VK_NULL_HANDLE;
     }
 }
 

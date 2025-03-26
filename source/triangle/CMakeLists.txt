@@ -6,6 +6,7 @@ file(GLOB SHADERS "${SHADER_DIR}/*.vert" "${SHADER_DIR}/*.frag")
 
 source_group("shaders" FILES ${SHADERS})
 add_executable(triangle ${SOURCES} ${HEADERS} ${SHADERS})
+set_property(TARGET triangle PROPERTY FOLDER "samples")
 
 target_include_directories(triangle PRIVATE $ENV{VULKAN_SDK}/Include)
 target_include_directories(triangle PRIVATE ${PROJECT_SOURCE_DIR}/third_party/glm-1.0.1)
