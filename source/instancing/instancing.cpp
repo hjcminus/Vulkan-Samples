@@ -84,9 +84,6 @@ bool InstancingDemo::Init() {
 
 	enable_display_ = true;
 
-	printf("F2: switch instancing or non-instancing mode\n");
-	printf("F3: switch specify material or constant material\n");
-
 	return true;
 }
 
