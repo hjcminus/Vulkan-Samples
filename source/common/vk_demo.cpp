@@ -94,6 +94,9 @@ VkDemo::VkDemo():
     view_angles_[ANGLE_YAW] = 0.0f;
     view_angles_[ANGLE_PITCH] = 0.0f;
 
+    memset(vk_framebuffers_, 0, sizeof(vk_framebuffers_));
+    memset(vk_draw_cmd_buffers_, 0, sizeof(vk_draw_cmd_buffers_));
+
 #if defined(_WIN32)
     hInstance_ = GetModuleHandle(NULL);
 #endif
