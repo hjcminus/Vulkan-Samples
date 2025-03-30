@@ -1179,9 +1179,10 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 		if (BI_RGB == infohead->biCompression) { // uncompressed mode
 			int src_line_len = (infohead->biWidth + 3) & ~3;
 
-			int valid_size = (int)sizeof(bmpfilehead_s) + (int)sizeof(bmpinfohead_s) 
-				           + 4 * 256 + src_line_len * infohead->biHeight;
-			if (valid_size != file_size) {
+			int palette_size = file_size - ((int)sizeof(bmpfilehead_s) + (int)sizeof(bmpinfohead_s)
+				+ src_line_len * infohead->biHeight);
+
+			if (palette_size < 0) {
 				File_FreeBinary(buffer);
 				printf("Bad size\n");
 				return false;
@@ -1198,7 +1199,7 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 			}
 
 			byte_t* palette = (byte_t*)(infohead + 1);
-			byte_t* src = palette + 4 * 256;
+			byte_t* src = palette + palette_size;
 
 			int dst_line_len = infohead->biWidth * 4;
 
@@ -2103,7 +2104,7 @@ static bool Model_LoadPLY(const char* filename, model_s & model);
 static bool Model_LoadObj(const char* filename, model_s & model);
 
 COMMON_API bool Model_Load(const char* filename, 
-	bool move_to_origin, model_s& model) 
+	bool move_to_origin, model_s& model, const glm::mat4* transform)
 {
 	memset(&model, 0, sizeof(model));
 
@@ -2133,6 +2134,7 @@ COMMON_API bool Model_Load(const char* filename,
 
 	// calculate min max
 	size_t stride = sizeof(glm::vec3);
+	uint32_t normal_offset = 0;
 
 	switch (model.vertex_format_) {
 	case vertex_format_t::VF_POS:
@@ -2143,15 +2145,22 @@ COMMON_API bool Model_Load(const char* filename,
 		break;
 	case vertex_format_t::VF_POS_NORMAL:
 		stride = sizeof(vertex_pos_normal_s);
+		normal_offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_);
+		break;
+	case vertex_format_t::VF_POS_UV:
+		stride = sizeof(vertex_pos_uv_s);
 		break;
 	case vertex_format_t::VF_POS_NORMAL_COLOR:
 		stride = sizeof(vertex_pos_normal_color_s);
+		normal_offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_);
 		break;
 	case vertex_format_t::VF_POS_NORMAL_UV:
 		stride = sizeof(vertex_pos_normal_uv_s);
+		normal_offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_);
 		break;
 	case vertex_format_t::VF_POS_NORMAL_UV_TANGENT:
 		stride = sizeof(vertex_pos_normal_uv_tangent_s);
+		normal_offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_);
 		break;
 	default:
 		Model_Free(model);
@@ -2161,17 +2170,27 @@ COMMON_API bool Model_Load(const char* filename,
 
 	char* v = (char*)model.vertices_;
 
-	glm::vec3* first_pos = (glm::vec3*)v;
+	float min_pos[3] = { 1.0e30f, 1.0e30f, 1.0e30f };
+	float max_pos[3] = { -1.0e30f, -1.0e30f, -1.0e30f };
 
-	float min_pos[3], max_pos[3];
+	for (uint32_t i = 0; i < model.num_vertex_; ++i) {
+		glm::vec3* v_pos = (glm::vec3*)v;
+		if (transform) {
+			glm::vec4 v_new_pos = *transform * glm::vec4(*v_pos, 1.0f);
+			v_pos->x = v_new_pos.x;
+			v_pos->y = v_new_pos.y;
+			v_pos->z = v_new_pos.z;
 
-	min_pos[0] = max_pos[0] = first_pos->x;
-	min_pos[1] = max_pos[1] = first_pos->y;
-	min_pos[2] = max_pos[2] = first_pos->z;
+			if (normal_offset) {
+				glm::vec3* v_normal = (glm::vec3*)(v + normal_offset);
+				glm::vec4 v_new_normal = *transform * glm::vec4(*v_normal, 0.0f);
+				v_normal->x = v_new_normal.x;
+				v_normal->y = v_new_normal.y;
+				v_normal->z = v_new_normal.z;
+			}
+		}
 
-	for (uint32_t i = 1; i < model.num_vertex_; ++i) {
-		v += stride;
-		float* pos = (float*)v;
+		float* pos = (float*)v_pos;
 
 		for (int j = 0; j < 3; ++j) {
 			if (pos[j] < min_pos[j]) {
@@ -2181,6 +2200,8 @@ COMMON_API bool Model_Load(const char* filename,
 				max_pos[j] = pos[j];
 			}
 		}
+
+		v += stride;
 	}
 
 	model.min_[0] = min_pos[0];
@@ -2335,30 +2356,35 @@ static bool Model_LoadObj(const char* filename, model_s& model) {
 	const glm::vec3* normal_lst = obj.GetNormal();
 	const glm::vec2* uv_lst = obj.GetUV();
 	const Obj::material_s* material_lst = obj.GetMaterial();
-	Obj::face_group_s* face_group = obj.GetFaceGroup();
+	const Obj::face_group_s* face_group = obj.GetFaceGroup();
 
 	if (!pos_lst || !normal_lst || !face_group) {
 		printf("Bad model \"%s\"\n", filename);
 		return false;
 	}
 
-	uint32_t num_pos = obj.NumberPos();
-	uint32_t num_normal = obj.NumberNormal();
-	uint32_t num_uv = obj.NumberUV();
-
-	uint32_t num_vertex = num_pos;
-	if (num_vertex < num_normal) {
-		num_vertex = num_normal;
-	}
-
-	if (num_vertex < num_uv) {
-		num_vertex = num_uv;
-	}
-
-	model.num_vertex_ = num_vertex;
-
 	uint32_t num_material = obj.NumberMaterial();
 	uint32_t num_face_group = obj.NumFaceGroup();
+
+	// allocate buffers
+
+	uint32_t num_vertex = 0;
+	uint32_t num_index = 0;
+	for (uint32_t i = 0; i < num_face_group; ++i) {
+		const Obj::face_group_s* fg = face_group + i;
+		for (uint32_t j = 0; j < fg->face_count_; ++j) {
+			const Obj::face_s* f = fg->faces_ + j;
+			if (f->vertex_count_ == 3) {
+				num_vertex += 3;
+				num_index += 3;
+			}
+			else if (f->vertex_count_ == 4) {
+				num_vertex += 4;
+				num_index += 6;
+			}
+			// ignore other faces
+		}
+	}
 
 	size_t vertex_size = 0;
 
@@ -2371,63 +2397,56 @@ static bool Model_LoadObj(const char* filename, model_s& model) {
 		vertex_size = sizeof(vertex_pos_normal_s);
 	}
 
-	size_t vertices_size = vertex_size * num_vertex;
-
-	byte_t * vertices = (byte_t*)TEMP_ALLOC(vertices_size);
-	if (!vertices) {
-		return false;
-	}
-
-	// fill zero
-	memset(vertices, 0, vertices_size);
-
-	model.vertices_ = vertices;
-	model.num_vertex_ = num_vertex;
-
-	// init position
-	for (uint32_t i = 0; i < num_pos /* not num_vertex */ ; ++i) {
-		*(glm::vec3*)(vertices + vertex_size * i) = pos_lst[i];
-	}
-
-	uint32_t num_index = 0;
-	for (uint32_t i = 0; i < num_face_group; ++i) {
-		const Obj::face_group_s* fg = face_group + i;
-		for (uint32_t j = 0; j < fg->face_count_; ++j) {
-			const Obj::face_s* f = fg->faces_ + j;
-			if (f->vertex_count_ == 3) {
-				num_index += 3;
-			}
-			else if (f->vertex_count_ == 4) {
-				num_index += 6;
-			}
-			// ignore other faces
+	model_material_s* materials = nullptr;
+	if (num_material) {
+		size_t materials_size = sizeof(model_material_s) * num_material;
+		materials = (model_material_s*)TEMP_ALLOC(materials_size);
+		if (!materials) {
+			printf("Could not allocate materials\n");
+			return false;
 		}
 	}
 
+	model_part_s* parts = nullptr;
+	if (num_face_group) {
+		size_t parts_size = sizeof(model_part_s) * num_face_group;
+		parts = (model_part_s*)TEMP_ALLOC(parts_size);
+		if (!parts) {
+			SAFE_FREE(materials);
+			printf("Could not allocate parts\n");
+			return false;
+		}
+	}
+
+	size_t vertices_size = vertex_size * num_vertex;
 	size_t indices_size = sizeof(uint32_t) * num_index;
+
+	byte_t* vertices = (byte_t*)TEMP_ALLOC(vertices_size);
 	uint32_t* indices = (uint32_t*)TEMP_ALLOC(indices_size);
-	if (!indices) {
-		printf("Could not allocate indices\n");
+
+	if (!vertices || !indices) {
+		SAFE_FREE(indices);
+		SAFE_FREE(vertices);
+		SAFE_FREE(parts);
+		SAFE_FREE(materials);
 		return false;
 	}
 
+	model.vertices_ = vertices;
 	model.indices_ = indices;
+	model.materials_ = materials;
+	model.parts_ = parts;
+	model.num_vertex_ = num_vertex;
 	model.num_index_ = num_index;
+	model.num_material_ = num_material;
+	model.num_parts_ = num_face_group;
+
+	// start convert
 
 	// convert material
 	if (num_material) {
 		char file_folder[MAX_PATH];
 		Str_ExtractFileDir(filename, file_folder, MAX_PATH);
-
-		size_t materials_size = sizeof(model_material_s) * num_material;
-		model_material_s* materials = (model_material_s*)TEMP_ALLOC(materials_size);
-		if (!materials) {
-			printf("Could not allocate materials\n");
-			return false;
-		}
-
-		model.materials_ = materials;
-		model.num_material_ = num_material;
 
 		for (uint32_t i = 0; i < num_material; ++i) {
 			const Obj::material_s* src = material_lst + i;
@@ -2448,120 +2467,166 @@ static bool Model_LoadObj(const char* filename, model_s& model) {
 		}
 	}
 
-	if (num_face_group) {
-		size_t parts_size = sizeof(model_part_s) * num_face_group;
-		model_part_s* parts = (model_part_s*)TEMP_ALLOC(parts_size);
-		if (!parts) {
-			printf("Could not allocate parts\n");
-			return false;
-		}
+	// faces
+	uint32_t written_vet = 0;
+	uint32_t written_idx = 0;
+	
+	for (uint32_t i = 0; i < num_face_group; ++i) {
+		const Obj::face_group_s* src_fg = face_group + i;
+		model_part_s* dst_fg = parts + i;
 
-		model.parts_ = parts;
-		model.num_parts_ = num_face_group;
+		dst_fg->material_idx_ = src_fg->material_idx_;
+		dst_fg->index_offset_ = written_idx;
 
-		uint32_t written_idx = 0;
+		for (uint32_t j = 0; j < src_fg->face_count_; ++j) {
+			const Obj::face_s* f = src_fg->faces_ + j;
 
-		for (uint32_t i = 0; i < num_face_group; ++i) {
-			Obj::face_group_s* src_fg = face_group + i;
-			model_part_s* dst_fg = parts + i;
+			// copy vertex
+			uint32_t face_vet0 = written_vet;
 
-			dst_fg->material_idx_ = src_fg->material_idx_;
-			dst_fg->index_offset_ = written_idx;
+			for (uint32_t k = 0; k < f->vertex_count_; ++k) {
+				const Obj::face_vertex_s* fv = f->vertices_ + k;
 
-			for (uint32_t j = 0; j < src_fg->face_count_; ++j) {
-				Obj::face_s* f = src_fg->faces_ + j;
-
-				for (uint32_t k = 0; k < f->vertex_count_; ++k) {
-					Obj::face_vertex_s* fv = f->vertices_ + k;
-
-					uint32_t fv_p_idx = fv->pos_idx_;
-					uint32_t fv_n_idx = fv->normal_idx_;
-					uint32_t fv_u_idx = fv->uv_idx_;
-
-					if (fv_p_idx >= num_pos) {
-						printf("pos_idx %u >= %d\n", fv_p_idx, num_pos);
-						return false;
-					}
-
-					if (fv_n_idx >= num_normal) {
-						printf("pos_idx %u >= %d\n", fv_n_idx, num_pos);
-						return false;
-					}
-
-					if (fv_u_idx >= num_uv) {
-						printf("pos_idx %u >= %d\n", fv_u_idx, num_pos);
-						return false;
-					}
-
-					glm::vec3 src_pos = pos_lst[fv_p_idx];
-					glm::vec3 src_normal = normal_lst[fv_n_idx];
-
-					if (uv_lst) {
-						glm::vec2 src_uv = uv_lst[fv_u_idx];
-
-						if (fv_n_idx >= num_pos || fv_u_idx >= num_pos) {
-							if (fv_u_idx > fv_n_idx) {
-								vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_u_idx);
-								dst_v->pos_ = src_pos;	// dupicate
-								dst_v->normal_ = src_normal;
-								dst_v->uv_ = src_uv;
-
-								fv->pos_idx_ = fv_u_idx;	// update 
-							}
-							else {
-								vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_n_idx);
-								dst_v->pos_ = src_pos;	// dupicate
-								dst_v->normal_ = src_normal;
-								dst_v->uv_ = src_uv;
-
-								fv->pos_idx_ = fv_n_idx;	// update 
-							}
-						}
-						else {
-							vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_p_idx);
-							dst_v->normal_ = src_normal;
-							dst_v->uv_ = src_uv;
-						}
-					}
-					else {
-						if (fv_n_idx >= num_pos) {
-							vertex_pos_normal_uv_s* dst_v = (vertex_pos_normal_uv_s*)(vertices + vertex_size * fv_n_idx);
-							dst_v->pos_ = src_pos;	// dupicate
-							dst_v->normal_ = src_normal;
-
-							fv->pos_idx_ = fv_n_idx;	// update 
-						}
-						else {
-							vertex_pos_normal_s* dst_v = (vertex_pos_normal_s*)(vertices + vertex_size * fv_p_idx);
-							dst_v->normal_ = src_normal;
-						}
-					}					
+				if (uv_lst) {
+					vertex_pos_normal_uv_s* dst_vertex = (vertex_pos_normal_uv_s*)(vertices + vertex_size * (face_vet0 + k));
+					
+					dst_vertex->pos_ = pos_lst[fv->pos_idx_];
+					dst_vertex->normal_ = normal_lst[fv->normal_idx_];
+					dst_vertex->uv_ = uv_lst[fv->uv_idx_];
 				}
+				else {
+					vertex_pos_normal_s* dst_vertex = (vertex_pos_normal_s*)(vertices + vertex_size * (face_vet0 + k));
 
-				if (f->vertex_count_ == 3) {
-					indices[written_idx + 0] = f->vertices_[0].pos_idx_;
-					indices[written_idx + 1] = f->vertices_[1].pos_idx_;
-					indices[written_idx + 2] = f->vertices_[2].pos_idx_;
-
-					written_idx += 3;
+					dst_vertex->pos_ = pos_lst[fv->pos_idx_];
+					dst_vertex->normal_ = normal_lst[fv->normal_idx_];
 				}
-				else if (f->vertex_count_ == 4) {
-					indices[written_idx + 0] = f->vertices_[0].pos_idx_;
-					indices[written_idx + 1] = f->vertices_[1].pos_idx_;
-					indices[written_idx + 2] = f->vertices_[2].pos_idx_;
-
-					indices[written_idx + 3] = f->vertices_[2].pos_idx_;
-					indices[written_idx + 4] = f->vertices_[3].pos_idx_;
-					indices[written_idx + 5] = f->vertices_[0].pos_idx_;
-
-					written_idx += 6;
-				}
-				// ignore other faces
 			}
 
-			dst_fg->index_count_ = written_idx - dst_fg->index_offset_;
+			written_vet += f->vertex_count_;
+
+			// setup index
+			if (f->vertex_count_ == 3) {
+				indices[written_idx + 0] = face_vet0;
+				indices[written_idx + 1] = face_vet0 + 1;
+				indices[written_idx + 2] = face_vet0 + 2;
+
+				written_idx += 3;
+			}
+			else if (f->vertex_count_ == 4) {
+				indices[written_idx + 0] = face_vet0;
+				indices[written_idx + 1] = face_vet0 + 1;
+				indices[written_idx + 2] = face_vet0 + 2;
+
+				indices[written_idx + 3] = face_vet0 + 2;
+				indices[written_idx + 4] = face_vet0 + 3;
+				indices[written_idx + 5] = face_vet0;
+
+				written_idx += 6;
+			}
+			// ignore other faces
 		}
+
+		dst_fg->index_count_ = written_idx - dst_fg->index_offset_;
 	}
 
 	return true;
+}
+
+/*
+================================================================================
+vulkan helper
+================================================================================
+*/
+
+static void Vk_PushDescriptorSetLayoutBinding(std::vector<VkDescriptorSetLayoutBinding>& bindings,
+	uint32_t binding, VkDescriptorType descriptor_type, VkShaderStageFlags stage_flags) 
+{
+	bindings.push_back(
+		{
+			.binding = binding,	// the binding number of this entry and
+			// corresponds to a resource of the same binding number in the shader stages.
+			.descriptorType = descriptor_type,
+			.descriptorCount = 1,	// non-array
+			.stageFlags = stage_flags,	// specifying which pipeline shader stages can access a resource for this binding.
+			.pImmutableSamplers = nullptr
+		});
+}
+
+void Vk_PushDescriptorSetLayoutBinding_UBO(
+	std::vector<VkDescriptorSetLayoutBinding>& bindings,
+	uint32_t binding, VkShaderStageFlags stage_flags)
+{
+	Vk_PushDescriptorSetLayoutBinding(bindings, binding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		stage_flags);
+}
+
+void Vk_PushDescriptorSetLayoutBinding_Tex(std::vector<VkDescriptorSetLayoutBinding>& bindings,
+	uint32_t binding, VkShaderStageFlags stage_flags)
+{
+	Vk_PushDescriptorSetLayoutBinding(bindings, binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		stage_flags);
+}
+
+void Vk_PushDescriptorSetLayoutBinding_SBO(std::vector<VkDescriptorSetLayoutBinding>& bindings,
+	uint32_t binding, VkShaderStageFlags stage_flags) 
+{
+	Vk_PushDescriptorSetLayoutBinding(bindings, binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		stage_flags);
+}
+
+void Vk_PushWriteDescriptorSet_UBO(
+	std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+	VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer)
+{
+	write_descriptor_sets.push_back(
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.pNext = nullptr,
+			.dstSet = vk_desc_set,
+			.dstBinding = binding,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.pImageInfo = nullptr,
+			.pBufferInfo = &buffer.desc_buffer_info_,
+			.pTexelBufferView = nullptr
+		});
+}
+
+void Vk_PushWriteDescriptorSet_Tex(
+	std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+	VkDescriptorSet vk_desc_set, uint32_t binding, const vk_image_s& texture)
+{
+	write_descriptor_sets.push_back(
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.pNext = nullptr,
+			.dstSet = vk_desc_set,
+			.dstBinding = binding,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &texture.desc_image_info_,
+			.pBufferInfo = nullptr,
+			.pTexelBufferView = nullptr
+		});
+}
+
+COMMON_API void Vk_PushWriteDescriptorSet_SBO(
+	std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+	VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer) 
+{
+	write_descriptor_sets.push_back(
+		{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.pNext = nullptr,
+			.dstSet = vk_desc_set,
+			.dstBinding = binding,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			.pImageInfo = nullptr,
+			.pBufferInfo = &buffer.desc_buffer_info_,
+			.pTexelBufferView = nullptr
+		});
 }

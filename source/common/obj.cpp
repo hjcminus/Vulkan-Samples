@@ -345,10 +345,6 @@ const Obj::face_group_s* Obj::GetFaceGroup() const {
 	return face_groups_;
 }
 
-Obj::face_group_s* Obj::GetFaceGroup() {
-	return face_groups_;
-}
-
 uint32_t Obj::NumFaceGroup() const {
 	return face_group_count_;
 }
@@ -532,7 +528,8 @@ bool Obj::ParseFace(const char* line, uint32_t read_position_count,
 			int idx = atoi(str_indices[j]);
 
 			if (idx < 0) {
-				int adjust_idx = read_counts[j] + idx + 1;
+				// negative indices: e.g. -1 references the last vertex defined
+				int adjust_idx = (int)read_counts[j] + idx + 1;
 				if (adjust_idx <= 0 || (uint32_t)adjust_idx > read_counts[j]) {
 					return false;	// out of range
 				}

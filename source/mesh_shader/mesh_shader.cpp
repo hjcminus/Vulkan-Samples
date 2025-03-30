@@ -247,41 +247,18 @@ void MeshShaderDemo::DestroyShaderStorageBuffers() {
 bool MeshShaderDemo::CreateDescriptorSetLayout() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	std::array<VkDescriptorSetLayoutBinding, 4> binding;
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-	int idx = 0;
-	binding[idx].binding = 0;
-	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	binding[idx].descriptorCount = 1;
-	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;    // descriptset can be used in which shaders
-	binding[idx].pImmutableSamplers = nullptr;
-
-	idx++;
-	binding[idx].binding = 1;
-	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	binding[idx].descriptorCount = 1;
-	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
-	binding[idx].pImmutableSamplers = nullptr;
-
-	idx++;
-	binding[idx].binding = 2;
-	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	binding[idx].descriptorCount = 1;
-	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
-	binding[idx].pImmutableSamplers = nullptr;
-
-	idx++;
-	binding[idx].binding = 3;
-	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	binding[idx].descriptorCount = 1;
-	binding[idx].stageFlags = VK_SHADER_STAGE_MESH_BIT_EXT;
-	binding[idx].pImmutableSamplers = nullptr;
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 0, VK_SHADER_STAGE_MESH_BIT_EXT);
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 1, VK_SHADER_STAGE_MESH_BIT_EXT);
+	Vk_PushDescriptorSetLayoutBinding_SBO(bindings, 2, VK_SHADER_STAGE_MESH_BIT_EXT);
+	Vk_PushDescriptorSetLayoutBinding_SBO(bindings, 3, VK_SHADER_STAGE_MESH_BIT_EXT);
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = (uint32_t)binding.size();
-	create_info.pBindings = binding.data();
+	create_info.bindingCount = (uint32_t)bindings.size();
+	create_info.pBindings = bindings.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout_);
 }
@@ -300,57 +277,14 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 		return false;
 	}
 
-	std::array<VkWriteDescriptorSet, 4> write_descriptor_set;
+	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
 
-	int idx = 0;
-	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[idx].pNext = nullptr;
-	write_descriptor_set[idx].dstSet = vk_descriptorset_;
-	write_descriptor_set[idx].dstBinding = 0;    // layout (binding = 0) uniform BufferMat 
-	write_descriptor_set[idx].dstArrayElement = 0;
-	write_descriptor_set[idx].descriptorCount = 1;
-	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_mvp_.desc_buffer_info_;
-	write_descriptor_set[idx].pTexelBufferView = nullptr;
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_, 0, uniform_buffer_mvp_);
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_, 1, uniform_buffer_terrain_);
+	Vk_PushWriteDescriptorSet_SBO(write_descriptor_sets, vk_descriptorset_, 2, shader_storage_buffer_heights_);
+	Vk_PushWriteDescriptorSet_SBO(write_descriptor_sets, vk_descriptorset_, 3, shader_storage_buffer_color_table_);
 
-	idx++;
-	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[idx].pNext = nullptr;
-	write_descriptor_set[idx].dstSet = vk_descriptorset_;
-	write_descriptor_set[idx].dstBinding = 1;
-	write_descriptor_set[idx].dstArrayElement = 0;
-	write_descriptor_set[idx].descriptorCount = 1;
-	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.desc_buffer_info_;
-	write_descriptor_set[idx].pTexelBufferView = nullptr;
-
-	idx++;
-	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[idx].pNext = nullptr;
-	write_descriptor_set[idx].dstSet = vk_descriptorset_;
-	write_descriptor_set[idx].dstBinding = 2;		// layout(std430, binding = 1) buffer Vertices
-	write_descriptor_set[idx].dstArrayElement = 0;
-	write_descriptor_set[idx].descriptorCount = 1;
-	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_heights_.desc_buffer_info_;
-	write_descriptor_set[idx].pTexelBufferView = nullptr;
-
-	idx++;
-	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[idx].pNext = nullptr;
-	write_descriptor_set[idx].dstSet = vk_descriptorset_;
-	write_descriptor_set[idx].dstBinding = 3;
-	write_descriptor_set[idx].dstArrayElement = 0;
-	write_descriptor_set[idx].descriptorCount = 1;
-	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &shader_storage_buffer_color_table_.desc_buffer_info_;
-	write_descriptor_set[idx].pTexelBufferView = nullptr;
-
-	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_set.size(), write_descriptor_set.data(), 0, nullptr);
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
 
 	return true;
 }
@@ -369,20 +303,15 @@ void MeshShaderDemo::FreeDemoDescriptorSet() {
 bool MeshShaderDemo::CreateDescriptorSetLayout2() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	std::array<VkDescriptorSetLayoutBinding, 1> binding;
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-	int idx = 0;
-	binding[idx].binding = 0;
-	binding[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	binding[idx].descriptorCount = 1;
-	binding[idx].stageFlags = VK_SHADER_STAGE_TASK_BIT_EXT;    // descriptset can be used in which shaders
-	binding[idx].pImmutableSamplers = nullptr;
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 0, VK_SHADER_STAGE_TASK_BIT_EXT);
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = (uint32_t)binding.size();
-	create_info.pBindings = binding.data();
+	create_info.bindingCount = (uint32_t)bindings.size();
+	create_info.pBindings = bindings.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout2_);
 }
@@ -401,21 +330,11 @@ bool MeshShaderDemo::AllocDemoDescriptorSet2() {
 		return false;
 	}
 
-	std::array<VkWriteDescriptorSet, 1> write_descriptor_set;
+	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
 
-	int idx = 0;
-	write_descriptor_set[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_set[idx].pNext = nullptr;
-	write_descriptor_set[idx].dstSet = vk_descriptorset2_;
-	write_descriptor_set[idx].dstBinding = 0;
-	write_descriptor_set[idx].dstArrayElement = 0;
-	write_descriptor_set[idx].descriptorCount = 1;
-	write_descriptor_set[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-	write_descriptor_set[idx].pImageInfo = nullptr;
-	write_descriptor_set[idx].pBufferInfo = &uniform_buffer_terrain_.desc_buffer_info_;
-	write_descriptor_set[idx].pTexelBufferView = nullptr;
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset2_, 0, uniform_buffer_terrain_);
 
-	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_set.size(), write_descriptor_set.data(), 0, nullptr);
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
 
 	return true;
 }
@@ -773,7 +692,7 @@ void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 void MeshShaderDemo::UpdateMVPUniformBuffer() {
 	ubo_mat_s ubo_mvp;
 
-	glm::mat4 projection_matrix = glm::perspective(glm::radians(70.0f),
+	glm::mat4 projection_matrix = glm::perspectiveRH_ZO(glm::radians(70.0f),
 		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 4.0f, 4096.0f);
 
 	glm::mat4 view_matrix;

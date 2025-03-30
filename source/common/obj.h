@@ -65,7 +65,6 @@ public:
 	uint32_t				NumberMaterial() const;
 
 	const face_group_s *	GetFaceGroup() const;
-	face_group_s*			GetFaceGroup();
 	uint32_t				NumFaceGroup() const;
 
 private:

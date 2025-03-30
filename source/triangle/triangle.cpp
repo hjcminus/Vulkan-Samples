@@ -63,6 +63,7 @@ bool TriangleDemo::Init() {
 
 	// init camera
 	camera_mode_ = camera_mode_t::CM_ROTATE_OBJECT;
+	camera_rotation_flags_ = ROTATION_YAW_BIT;
 
 	/*
 	      y
@@ -74,7 +75,7 @@ bool TriangleDemo::Init() {
 	 */
 
 	// z axis is up
-	camera_.pos_ = glm::vec3(0.0f, -4.0f, 0.0f);
+	camera_.pos_ = glm::vec3(0.0f, -2.0f, 0.0f);
 	camera_.target_ = glm::vec3(0.0f);
 	camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
 
@@ -146,6 +147,7 @@ void TriangleDemo::BuildCommandBuffers() {
 			.minDepth = 0.0f,
 			.maxDepth = 1.0f
 		};
+
 		vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
 		VkRect2D scissor;
@@ -177,7 +179,7 @@ void TriangleDemo::BuildCommandBuffers() {
 		   the bound graphics pipeline.
 		 */
 		vkCmdDraw(cmd_buf,
-			3,	//  vertexCount
+			6,	//  vertexCount
 			1,	//	instanceCount: is the number of instances to draw
 			0,	//	firstVertex
 			0);	//	firstInstance
@@ -213,7 +215,10 @@ bool TriangleDemo::CreateTriangle() {
 	std::vector<vertex_pos_color_s> vertex_buffer = {
 		{ { -1.0f, 0.0f, -1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
 		{ {  1.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-		{ {  0.0f, 0.0f,  1.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+		{ {  0.0f, 0.0f,  1.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } },
+		{ {  0.0f,-1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f, 1.0f } },
+		{ {  0.0f, 1.0f, -1.0f }, { 0.0f, 1.0f, 1.0f, 1.0f } },
+		{ {  0.0f, 0.0f,  1.0f }, { 1.0f, 0.0f, 1.0f, 1.0f } }
 	};
 	uint32_t vertex_buffer_size = static_cast<uint32_t>(vertex_buffer.size()) * sizeof(vertex_pos_color_s);
 
@@ -228,24 +233,17 @@ void TriangleDemo::DestroyTriangle() {
 bool TriangleDemo::CreateDescriptorSetLayout() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	VkDescriptorSetLayoutBinding binding[1] = {
-		{
-			.binding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-			.pImmutableSamplers = nullptr
-		}
-	};
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
+
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 0, VK_SHADER_STAGE_VERTEX_BIT);
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = 1;
-	create_info.pBindings = binding;
+	create_info.bindingCount = (uint32_t)bindings.size();
+	create_info.pBindings = bindings.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout_);
-
 }
 
 // descriptor set
@@ -270,19 +268,10 @@ bool TriangleDemo::AllocDescriptorSets() {
 
 	vk_descriptorset_ = sets[0];
 
-	std::array<VkWriteDescriptorSet, 1> write_descriptor_sets;
+	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
 
-	int idx = 0;
-	write_descriptor_sets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_sets[idx].pNext = nullptr;
-	write_descriptor_sets[idx].dstSet = vk_descriptorset_;
-	write_descriptor_sets[idx].dstBinding = 0;
-	write_descriptor_sets[idx].dstArrayElement = 0;
-	write_descriptor_sets[idx].descriptorCount = 1;
-	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	write_descriptor_sets[idx].pImageInfo = nullptr;
-	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_mvp_.desc_buffer_info_;
-	write_descriptor_sets[idx].pTexelBufferView = nullptr;
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_,
+		0, uniform_buffer_mvp_);
 
 	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
 
@@ -330,8 +319,10 @@ bool TriangleDemo::CreatePipeline() {
 		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 		.primitive_restart_enable_ = VK_FALSE,
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
-		.cull_mode_ = VK_CULL_MODE_NONE,
+		.cull_mode_ = VK_CULL_MODE_NONE,	// VK_CULL_MODE_NONE, VK_CULL_MODE_BACK_BIT
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.depth_test_enable_ = VK_TRUE,
+		.depth_write_enable_ = VK_TRUE,
 		.pipeline_layout_ = vk_pipeline_layout_,
 		.render_pass_ = vk_render_pass_
 	};
@@ -342,11 +333,15 @@ bool TriangleDemo::CreatePipeline() {
 void TriangleDemo::UpdateUniformBuffer() {
 	ubo_mat_s ubo_mvp = {};
 
-	glm::mat4 proj_mat = glm::perspective(glm::radians(70.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 1.0f, 16.0f);
+	glm::mat4 proj_mat = glm::perspectiveRH_ZO(glm::radians(45.0f),
+		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 1.0f, 4.0f);
+
+	// revert y // revert y by set VkViewport
+	// proj_mat[1][1] *= -1.0f;
 
 	glm::mat4 view_mat, model_mat;
 	GetViewMatrix(view_mat);
+
 	GetModelMatrix(model_mat);
 
 	ubo_mvp.matrix_ = proj_mat * view_mat * model_mat;

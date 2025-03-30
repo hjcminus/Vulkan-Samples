@@ -72,3 +72,29 @@ struct vk_image_s {
     VkImageView			    image_view_;
     VkDescriptorImageInfo   desc_image_info_;
 };
+
+/*
+================================================================================
+vulkan helper
+================================================================================
+*/
+COMMON_API void Vk_PushDescriptorSetLayoutBinding_UBO(std::vector<VkDescriptorSetLayoutBinding> & bindings,
+    uint32_t binding, VkShaderStageFlags stage_flags);
+
+COMMON_API void Vk_PushDescriptorSetLayoutBinding_Tex(std::vector<VkDescriptorSetLayoutBinding>& bindings,
+    uint32_t binding, VkShaderStageFlags stage_flags);
+
+COMMON_API void Vk_PushDescriptorSetLayoutBinding_SBO(std::vector<VkDescriptorSetLayoutBinding>& bindings,
+    uint32_t binding, VkShaderStageFlags stage_flags);
+
+COMMON_API void Vk_PushWriteDescriptorSet_UBO(
+    std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+    VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer);
+
+COMMON_API void Vk_PushWriteDescriptorSet_Tex(
+    std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+    VkDescriptorSet vk_desc_set, uint32_t binding, const vk_image_s & texture);
+
+COMMON_API void Vk_PushWriteDescriptorSet_SBO(
+    std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+    VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer);

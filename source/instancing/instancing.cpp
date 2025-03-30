@@ -281,38 +281,17 @@ void InstancingDemo::DestroyInstanceBuffer() {
 bool InstancingDemo::CreateDescSetLayout() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	std::vector<VkDescriptorSetLayoutBinding> binding;
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-	binding.push_back(
-		{
-			.binding = 0,	// ubo_mvp
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		});
-	binding.push_back(
-		{
-			.binding = 1,	// ubo_viewer
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		});
-	binding.push_back(
-		{
-			.binding = 2,	// ubo_light
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		});
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 0, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 2, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = (uint32_t)binding.size();
-	create_info.pBindings = binding.data();
+	create_info.bindingCount = (uint32_t)bindings.size();
+	create_info.pBindings = bindings.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, 
 		&create_info, nullptr, &vk_desc_set_layout_);
@@ -334,47 +313,9 @@ bool InstancingDemo::AllocDescriptorSets() {
 
 	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
 
-	write_descriptor_sets.push_back(
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.pNext = nullptr,
-			.dstSet = vk_desc_set_,
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pImageInfo = nullptr,
-			.pBufferInfo = &ubo_mvp_.desc_buffer_info_,
-			.pTexelBufferView = nullptr
-		});
-
-	write_descriptor_sets.push_back(
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.pNext = nullptr,
-			.dstSet = vk_desc_set_,
-			.dstBinding = 1,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pImageInfo = nullptr,
-			.pBufferInfo = &ubo_viewer_.desc_buffer_info_,
-			.pTexelBufferView = nullptr
-		});
-
-	write_descriptor_sets.push_back(
-		{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.pNext = nullptr,
-			.dstSet = vk_desc_set_,
-			.dstBinding = 2,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pImageInfo = nullptr,
-			.pBufferInfo = &ubo_light_.desc_buffer_info_,
-			.pTexelBufferView = nullptr
-		});
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_, 0, ubo_mvp_);
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_, 1, ubo_viewer_);
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_, 2, ubo_light_);
 
 	vkUpdateDescriptorSets(vk_device_, 
 		(uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
@@ -418,6 +359,8 @@ bool InstancingDemo::CreatePipeline() {
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
 		.cull_mode_ = VK_CULL_MODE_NONE,
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.depth_test_enable_ = VK_TRUE,
+		.depth_write_enable_ = VK_TRUE,
 		.pipeline_layout_ = vk_pipeline_layout_,
 		.render_pass_ = vk_render_pass_
 	};
@@ -428,7 +371,7 @@ bool InstancingDemo::CreatePipeline() {
 void InstancingDemo::UpdateMVPUniformBuffer() {
 	ubo_mvp_sep_s ubo_mvp_sep = {};
 
-	ubo_mvp_sep.proj_ = glm::perspective(glm::radians(45.0f),
+	ubo_mvp_sep.proj_ = glm::perspectiveRH_ZO(glm::radians(45.0f),
 		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 1.0f, 1024.0f);
 
 	GetViewMatrix(ubo_mvp_sep.view_);

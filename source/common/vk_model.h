@@ -31,7 +31,8 @@ public:
 	VkModel(VkDemo * owner);
 	~VkModel();
 
-	bool					Load(const load_params_s & params, const char * filename, bool move_to_origin);
+	bool					Load(const load_params_s & params, const char * filename, 
+								bool move_to_origin, const glm::mat4* transform = nullptr);
 	void					Free();
 
 	vertex_format_t			GetVertexFormat() const;

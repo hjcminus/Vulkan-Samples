@@ -46,7 +46,9 @@ VkModel::~VkModel() {
 	Free();
 }
 
-bool VkModel::Load(const load_params_s& params, const char* filename, bool move_to_origin) {
+bool VkModel::Load(const load_params_s& params, const char* filename, 
+	bool move_to_origin, const glm::mat4* transform)
+{
 	Free();
 	
 	if (!owner_->CreateSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -55,7 +57,7 @@ bool VkModel::Load(const load_params_s& params, const char* filename, bool move_
 	}
 	
 	model_s model = {};
-	if (!owner_->LoadModel(filename, move_to_origin, model)) {
+	if (!owner_->LoadModel(filename, move_to_origin, model, transform)) {
 		return false;
 	}
 
@@ -101,6 +103,9 @@ bool VkModel::Load(const load_params_s& params, const char* filename, bool move_
 		break;
 	case vertex_format_t::VF_POS_NORMAL:
 		ok = Template_CreateVertexBuffer<vertex_pos_normal_s>(owner_, model, vertex_buffer_);
+		break;
+	case vertex_format_t::VF_POS_UV:
+		ok = Template_CreateVertexBuffer<vertex_pos_uv_s>(owner_, model, vertex_buffer_);
 		break;
 	case vertex_format_t::VF_POS_NORMAL_COLOR:
 		ok = Template_CreateVertexBuffer<vertex_pos_normal_color_s>(owner_, model, vertex_buffer_);

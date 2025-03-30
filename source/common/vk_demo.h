@@ -33,7 +33,7 @@ public:
     size_t                  GetAlignedBufferSize(size_t sz) const;
     size_t                  GetAlignedMinOffsetSize(size_t sz) const;
 
-    bool                    LoadModel(const char * filename, bool move_to_origin, model_s & model) const;
+    bool                    LoadModel(const char * filename, bool move_to_origin, model_s & model, const glm::mat4* transform = nullptr) const;
 
     bool                    CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_prop_flags, VkDeviceSize req_size) const;
     void                    DestroyBuffer(vk_buffer_s& buffer) const;
@@ -74,7 +74,11 @@ protected:
         CM_ROTATE_OBJECT
     };
 
+    static const uint32_t   ROTATION_YAW_BIT = 1;
+    static const uint32_t   ROTATION_PITCH_BIT = 2;
+    
     camera_mode_t           camera_mode_;
+    uint32_t                camera_rotation_flags_;
 
     // configuration
     uint32_t                cfg_viewport_cx_;
@@ -211,6 +215,8 @@ protected:
         VkPolygonMode       polygon_mode_;
         VkCullModeFlags     cull_mode_;
         VkFrontFace         front_face_;
+        VkBool32            depth_test_enable_;
+        VkBool32            depth_write_enable_;
         VkPipelineLayout    pipeline_layout_;
         VkRenderPass        render_pass_;
     };

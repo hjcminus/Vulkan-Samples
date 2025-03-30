@@ -54,7 +54,7 @@ common
 ================================================================================
 */
 
-#define SQUARE(x)			(x) * (x)
+// #define SQUARE(x)			(x) * (x)
 
 #define	TEMP_ALLOC(sz)		malloc(sz)
 #define TEMP_FREE(ptr)		free(ptr)
@@ -250,6 +250,7 @@ enum class vertex_format_t : int32_t {
 	VF_POS,
 	VF_POS_COLOR,
 	VF_POS_NORMAL,
+	VF_POS_UV,
 	VF_POS_NORMAL_COLOR,
 	VF_POS_NORMAL_UV,
 	VF_POS_NORMAL_UV_TANGENT
@@ -267,6 +268,11 @@ struct vertex_pos_color_s {
 struct vertex_pos_normal_s {
 	glm::vec3				pos_;
 	glm::vec3				normal_;
+};
+
+struct vertex_pos_uv_s {
+	glm::vec3				pos_;
+	glm::vec2				uv_;
 };
 
 struct vertex_pos_normal_color_s {
@@ -337,7 +343,7 @@ struct model_s {
 	float					max_[3];
 };
 
-COMMON_API bool				Model_Load(const char* filename, bool move_to_origin, model_s & model);
+COMMON_API bool				Model_Load(const char* filename, bool move_to_origin, model_s & model, const glm::mat4 * transform = nullptr);
 COMMON_API void				Model_Free(model_s& model);
 
 /*

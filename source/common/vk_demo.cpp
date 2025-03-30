@@ -16,6 +16,7 @@ VkDemo
 */
 VkDemo::VkDemo():
     camera_mode_(camera_mode_t::CM_MOVE_CAMERA),
+    camera_rotation_flags_(ROTATION_YAW_BIT | ROTATION_PITCH_BIT),
     cfg_viewport_cx_(640),
     cfg_viewport_cy_(480),
 
@@ -318,11 +319,13 @@ size_t VkDemo::GetAlignedMinOffsetSize(size_t sz) const {
     }
 }
 
-bool VkDemo::LoadModel(const char* filename, bool move_to_origin, model_s& model) const {
+bool VkDemo::LoadModel(const char* filename, bool move_to_origin, 
+    model_s& model, const glm::mat4* transform) const
+{
     char full_filename[MAX_PATH];
     Str_SPrintf(full_filename, MAX_PATH, "%s/%s", models_dir_, filename);
 
-    return Model_Load(full_filename, move_to_origin, model);
+    return Model_Load(full_filename, move_to_origin, model, transform);
 }
 
 bool VkDemo::CreateBuffer(vk_buffer_s& buffer, 
@@ -957,6 +960,7 @@ bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& pa
     // check vertex format
     std::vector<VkVertexInputAttributeDescription> vertex_attribute_descriptions;
 
+    // position: <x, y, z>
     vertex_attribute_descriptions.push_back(
         {
             .location = 0,
@@ -1000,6 +1004,19 @@ bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& pa
                     .binding = 0,
                     .format = VK_FORMAT_R32G32B32_SFLOAT,
                     .offset = GET_FIELD_OFFSET(vertex_pos_normal_s, normal_)
+                }
+            );
+        }
+        break;
+    case vertex_format_t::VF_POS_UV:
+        stride = (uint32_t)sizeof(vertex_pos_uv_s);
+        if (params.additional_vertex_fields_ & VERTEX_FIELD_UV) {
+            vertex_attribute_descriptions.push_back(
+                {
+                    .location = next_location++,
+                    .binding = 0,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = GET_FIELD_OFFSET(vertex_pos_uv_s, uv_)
                 }
             );
         }
@@ -1294,13 +1311,14 @@ bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& pa
         .reference = 0
     };
 
+    // If the VK_EXT_depth_range_unrestricted extension is not enabled, minDepth must be between 0.0 and 1.0
     VkPipelineDepthStencilStateCreateInfo depthstencil_state = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .depthTestEnable = params.depth_test_enable_,
+        .depthWriteEnable = params.depth_write_enable_,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,  // pass condition: <=
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable = VK_FALSE,
         .front = stencil_op_state,
@@ -1424,8 +1442,13 @@ bool VkDemo::CreateDemoWindow() {
 void VkDemo::CursorRotate(float delta_yaw, float delta_pitch) {
     if (camera_mode_ == camera_mode_t::CM_MOVE_CAMERA) {
 
-        view_angles_[ANGLE_YAW] += delta_yaw * 0.5f;
-        view_angles_[ANGLE_PITCH] += delta_pitch * 0.5f;
+        if (camera_rotation_flags_ & ROTATION_YAW_BIT) {
+            view_angles_[ANGLE_YAW] += delta_yaw * 0.5f;
+        }
+
+        if (camera_rotation_flags_ & ROTATION_PITCH_BIT) {
+            view_angles_[ANGLE_PITCH] += delta_pitch * 0.5f;
+        }
 
         // normalize yaw in range [0, 360)
         while (view_angles_[ANGLE_YAW] >= 360.0f) {
@@ -1458,6 +1481,15 @@ void VkDemo::CursorRotate(float delta_yaw, float delta_pitch) {
     }
     else {
         // quaternion rotation
+        
+        if (!(camera_rotation_flags_ & ROTATION_YAW_BIT)) {
+            delta_yaw = 0.0f;
+        }
+
+        if (!(camera_rotation_flags_ & ROTATION_PITCH_BIT)) {
+            delta_pitch = 0.0f;
+        }
+
         glm::quat yaw_quat = glm::angleAxis(glm::radians(delta_yaw), glm::vec3(0.f, 0.f, 1.f));
         glm::quat pitch_quat = glm::angleAxis(-glm::radians(delta_pitch), glm::vec3(1.0f, 0.0f, 0.0f));
         

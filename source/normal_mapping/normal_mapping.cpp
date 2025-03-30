@@ -98,6 +98,7 @@ bool NormalMappingDemo::Init() {
 
 	// init camera
 	camera_mode_ = camera_mode_t::CM_ROTATE_OBJECT;
+	camera_rotation_flags_ = ROTATION_YAW_BIT;
 
 	camera_.pos_ = glm::vec3(0.0f, -2.0f, 0.0f);
 	camera_.target_ = glm::vec3(0.0f);
@@ -264,28 +265,19 @@ void NormalMappingDemo::DestroyIndexBuffer() {
 bool NormalMappingDemo::CreateDescriptorSetLayout_Uniform() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	VkDescriptorSetLayoutBinding binding[2] = {
-		{
-			.binding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		},
-		{
-			.binding = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		}
-	};
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
+
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 0, 
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+
+	Vk_PushDescriptorSetLayoutBinding_UBO(bindings, 1,
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = 2;
-	create_info.pBindings = binding;
+	create_info.bindingCount = (uint32_t)bindings.size();
+	create_info.pBindings = bindings.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout_uniform_);
 }
@@ -293,31 +285,16 @@ bool NormalMappingDemo::CreateDescriptorSetLayout_Uniform() {
 bool NormalMappingDemo::CreateDescriptorSetLayout_Sampler() {
 	VkDescriptorSetLayoutCreateInfo create_info = {};
 
-	VkDescriptorSetLayoutBinding binding[2] = {
-		{
-			.binding = 0,	// the binding number of this entry and 
-				// corresponds to a resource of the same binding number in the shader stages.
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,	// non-array
+	std::vector< VkDescriptorSetLayoutBinding> bindings;
 
-			// specifying which pipeline shader stages can access a resource for this binding.
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		},
-		{
-			.binding = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,	// non-array
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.pImmutableSamplers = nullptr
-		}
-	};
+	Vk_PushDescriptorSetLayoutBinding_Tex(bindings, 0, VK_SHADER_STAGE_FRAGMENT_BIT);
+	Vk_PushDescriptorSetLayoutBinding_Tex(bindings, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	create_info.pNext = nullptr;
 	create_info.flags = 0;
-	create_info.bindingCount = 2;
-	create_info.pBindings = binding;
+	create_info.bindingCount = (uint32_t)bindings.size();
+	create_info.pBindings = bindings.data();
 
 	return VK_SUCCESS == vkCreateDescriptorSetLayout(vk_device_, &create_info, nullptr, &vk_descriptorset_layout_sampler_);
 
@@ -348,63 +325,16 @@ bool NormalMappingDemo::AllocDescriptorSets() {
 	vk_descriptorset_sampler_ = sets[1];
 
 
-	std::array<VkWriteDescriptorSet, 4> write_descriptor_sets;
+	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
 
-	int idx = 0;
-	write_descriptor_sets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_sets[idx].pNext = nullptr;
-	write_descriptor_sets[idx].dstSet = vk_descriptorset_uniform_;
-	write_descriptor_sets[idx].dstBinding = 0;
-	write_descriptor_sets[idx].dstArrayElement = 0;
-	write_descriptor_sets[idx].descriptorCount = 1;
-	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	write_descriptor_sets[idx].pImageInfo = nullptr;
-	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_mat_.desc_buffer_info_;
-	write_descriptor_sets[idx].pTexelBufferView = nullptr;
-
-	idx++;
-	write_descriptor_sets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_sets[idx].pNext = nullptr;
-	write_descriptor_sets[idx].dstSet = vk_descriptorset_uniform_;
-	write_descriptor_sets[idx].dstBinding = 1;
-	write_descriptor_sets[idx].dstArrayElement = 0;
-	write_descriptor_sets[idx].descriptorCount = 1;
-	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	write_descriptor_sets[idx].pImageInfo = nullptr;
-	write_descriptor_sets[idx].pBufferInfo = &uniform_buffer_point_light_.desc_buffer_info_;
-	write_descriptor_sets[idx].pTexelBufferView = nullptr;
-
-	idx++;
-
-	VkDescriptorImageInfo desc_image_info_color = {};
-
-	desc_image_info_color.sampler = vk_sampler_;
-	desc_image_info_color.imageView = texture_color_.image_view_;
-	desc_image_info_color.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-	write_descriptor_sets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_sets[idx].pNext = nullptr;
-	write_descriptor_sets[idx].dstSet = vk_descriptorset_sampler_;
-	write_descriptor_sets[idx].dstBinding = 0;
-	write_descriptor_sets[idx].dstArrayElement = 0;
-	write_descriptor_sets[idx].descriptorCount = 1;
-	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	write_descriptor_sets[idx].pImageInfo = &desc_image_info_color;
-	write_descriptor_sets[idx].pBufferInfo = nullptr;
-	write_descriptor_sets[idx].pTexelBufferView = nullptr;
-
-	idx++;
-
-	write_descriptor_sets[idx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	write_descriptor_sets[idx].pNext = nullptr;
-	write_descriptor_sets[idx].dstSet = vk_descriptorset_sampler_;
-	write_descriptor_sets[idx].dstBinding = 1;
-	write_descriptor_sets[idx].dstArrayElement = 0;
-	write_descriptor_sets[idx].descriptorCount = 1;
-	write_descriptor_sets[idx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	write_descriptor_sets[idx].pImageInfo = &texture_normal_.desc_image_info_;
-	write_descriptor_sets[idx].pBufferInfo = nullptr;
-	write_descriptor_sets[idx].pTexelBufferView = nullptr;
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_uniform_,
+		0, uniform_buffer_mat_);
+	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_uniform_,
+		1, uniform_buffer_point_light_);
+	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_descriptorset_sampler_,
+		0, texture_color_);
+	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_descriptorset_sampler_,
+		1, texture_normal_);
 
 	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
 
@@ -455,6 +385,8 @@ bool NormalMappingDemo::CreatePipeline_Tex() {
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
 		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.depth_test_enable_ = VK_TRUE,
+		.depth_write_enable_ = VK_TRUE,
 		.pipeline_layout_ = vk_pipeline_layout_,
 		.render_pass_ = vk_render_pass_
 	};
@@ -474,6 +406,8 @@ bool NormalMappingDemo::CreatePipeline_Flat() {
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
 		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.depth_test_enable_ = VK_TRUE,
+		.depth_write_enable_ = VK_TRUE,
 		.pipeline_layout_ = vk_pipeline_layout_,
 		.render_pass_ = vk_render_pass_
 	};
@@ -493,6 +427,8 @@ bool NormalMappingDemo::CreatePipeline_NormalMapping() {
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
 		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.depth_test_enable_ = VK_TRUE,
+		.depth_write_enable_ = VK_TRUE,
 		.pipeline_layout_ = vk_pipeline_layout_,
 		.render_pass_ = vk_render_pass_
 	};
@@ -587,7 +523,7 @@ void NormalMappingDemo::BuildCommandBuffer(VkPipeline pipeline) {
 void NormalMappingDemo::UpdateMVPUniformBuffer() {
 	ubo_mvp_sep_s ubo_mvp_sep = {};
 
-	ubo_mvp_sep.proj_ = glm::perspective(glm::radians(70.0f),
+	ubo_mvp_sep.proj_ = glm::perspectiveRH_ZO(glm::radians(70.0f),
 		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 0.1f, 16.0f);
 
 	GetViewMatrix(ubo_mvp_sep.view_);

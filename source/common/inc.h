@@ -48,6 +48,15 @@
 #include <vector>
 #include <array>
 
+#include "MathLib/MathLib.h"
+#include "MathLib/Vec2.h"
+#include "MathLib/Vec3.h"
+#include "MathLib/Vec4.h"
+#include "MathLib/Angle.h"
+#include "MathLib/Mat3.h"
+#include "MathLib/Mat4.h"
+#include "MathLib/Quaternion.h"
+
  // vulkan
 #include <vulkan/vulkan.h>
 
