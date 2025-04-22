@@ -13,7 +13,8 @@ common
 ================================================================================
 */
 
-static char	g_data_folder[1024];
+static char	g_data_folder[MAX_PATH];
+static char g_shaders_folder[MAX_PATH];
 
 static wchar_t * FindDoubleDots(wchar_t* path) {
 	wchar_t* pc = wcsstr(path, L"..\\");
@@ -90,25 +91,38 @@ static bool Str_ExtractFileDirSelf(wchar_t * path) {
 	return false;
 }
 
+static void InitHalfFloatToFloatTables();
+static void InitFloatToHalfFloatTables();
+
 void Common_Init() {
 #if defined(PLATFORM_WINDOWS)
 	wchar_t buffer[MAX_PATH];
 	GetModuleFileName(GetModuleHandle(NULL), buffer, MAX_PATH);
 
 	Str_ExtractFileDirSelf(buffer);
-	wcscat_s(buffer, L"\\..\\..\\..\\data");
-
+	wcscat_s(buffer, L"\\..\\..\\..");
 	Str_EraseDoubleDotsInPath(buffer);
 
-	Str_UTF16ToUTF8((const char16_t*)buffer, g_data_folder, MAX_PATH);
+	char cbuffer[MAX_PATH];
+	Str_UTF16ToUTF8((const char16_t*)buffer, cbuffer, MAX_PATH);
+
+	Str_SPrintf(g_data_folder, COUNT_OF(g_data_folder), "%s\\data", cbuffer);
+	Str_SPrintf(g_shaders_folder, COUNT_OF(g_shaders_folder), "%s\\shaders", cbuffer);
 #endif
 
 	// randomize
 	SRand((unsigned)time(NULL));
+
+	InitHalfFloatToFloatTables();
+	InitFloatToHalfFloatTables();
 }
 
 COMMON_API const char * GetDataFolder() {
 	return g_data_folder;
+}
+
+COMMON_API const char* GetShadersFolder() {
+	return g_shaders_folder;
 }
 
 COMMON_API bool IsBigEndian() {
@@ -124,6 +138,123 @@ COMMON_API bool IsBigEndian() {
 	foo.b2_ = 0;
 
 	return foo.u16_ != 1;
+}
+
+// Jeroen van der Zijp, 2010, Fast Half Float Conversions
+
+static uint32_t g_mantissa_table[2048];
+static uint32_t g_exponent_table[64];
+static uint32_t g_offset_table[64];
+
+static void InitHalfFloatToFloatTables() {
+
+	auto convert_mantissa = [](uint32_t i) {
+		uint32_t m = i << 13;	// Zero pad mantissa bits
+		uint32_t e = 0;			// Zero exponent
+
+		while (!(m & 0x00800000)) {	// While not normalized
+			e -= 0x00800000;		// Decrement exponent (1 << 23)
+			m <<= 1;				// Shift mantissa
+		}
+
+		m &= ~0x00800000;			// Clear leading 1 bit
+		e += 0x38800000;			// Adjust bias ((127-14) << 23)
+		return m | e;				// Return combined number
+	};
+
+	// mantissa table
+	g_mantissa_table[0] = 0;
+
+	for (uint32_t i = 1; i < 1024; ++i) {
+		g_mantissa_table[i] = convert_mantissa(i);
+	}
+
+	for (uint32_t i = 1024; i < 2048; ++i) {
+		g_mantissa_table[i] = 0x38000000 + ((i - 1024) << 13);
+	}
+
+	// exponent table
+	g_exponent_table[0] = 0;
+	g_exponent_table[32] = 0x8000000;
+
+	for (uint32_t i = 1; i <= 30; ++i) {
+		g_exponent_table[i] = i << 23;
+	}
+
+	for (uint32_t i = 33; i <= 62; ++i) {
+		g_exponent_table[i] = 0x80000000 + ((i-32) << 23);
+	}
+
+	g_exponent_table[31] = 0x47800000;
+	g_exponent_table[63] = 0xC7800000;
+
+	// offset table
+	g_offset_table[0] = 0;
+	g_offset_table[32] = 0;
+
+	for (uint32_t i = 1; i < 32; ++i) {
+		g_offset_table[i] = 1024;
+	}
+}
+
+static float16_t g_base_table[512];
+static uint8_t g_shift_table[512];
+
+static void InitFloatToHalfFloatTables() {
+	for (uint32_t i = 0; i < 256; ++i) {
+		int32_t e = i - 127;
+		if (e < -24) {		// Very small numbers map to zero
+			g_base_table[i | 0x000] = 0x0000;
+			g_base_table[i | 0x100] = 0x8000;
+			g_shift_table[i | 0x000] = 24;
+			g_shift_table[i | 0x100] = 24;
+		}
+		else if (e < -14) {	// Small numbers map to denorms
+			g_base_table[i | 0x000] = (0x0400 >> (-e-14));
+			g_base_table[i | 0x100] = (0x0400 >> (-e - 14)) | 0x8000;
+			g_shift_table[i | 0x000] = -e-1;
+			g_shift_table[i | 0x100] = -e-1;
+		}
+		else if (e <= 15) {	// Normal numbers just lose precision
+			g_base_table[i | 0x000] = ((e+15) << 10);
+			g_base_table[i | 0x100] = ((e + 15) << 10) | 0x8000;
+			g_shift_table[i | 0x000] = 13;
+			g_shift_table[i | 0x100] = 13;
+		}
+		else if (e < 128) {	// Large numbers map to Infinity
+			g_base_table[i | 0x000] = 0x7C00;
+			g_base_table[i | 0x100] = 0xFC00;
+			g_shift_table[i | 0x000] = 24;
+			g_shift_table[i | 0x100] = 24;
+		}
+		else {	// Infinity and NaN's stay Infinity and NaN's
+			g_base_table[i | 0x000] = 0x7C00;
+			g_base_table[i | 0x100] = 0xFC00;
+			g_shift_table[i | 0x000] = 13;
+			g_shift_table[i | 0x100] = 13;
+		}
+	}
+}
+
+union float_uint_s {
+	uint32_t i_;
+	float	f_;
+} fu;
+
+COMMON_API float HalfFloatToFloat(float16_t h) {
+	float_uint_s fu;
+
+	fu.i_ = g_mantissa_table[g_offset_table[h >> 10] + (h & 0x3ff)] + g_exponent_table[h >> 10];
+	
+	return fu.f_;
+}
+
+COMMON_API float16_t FloatToHalfFloat(float f) {
+	float_uint_s fu;
+
+	fu.f_ = f;
+
+	return g_base_table[(fu.i_ >> 23) & 0x1ff] + ((fu.i_ & 0x007fffff) >> g_shift_table[(fu.i_ >> 23) & 0x1ff]);
 }
 
 /*
@@ -278,6 +409,22 @@ COMMON_API void Str_Copy(char* dst, int dst_cap, const char* src) {
 	strncpy(dst, src, dst_cap - 1);
 	size_t l = strlen(dst);
 	dst[l] = 0;
+#endif
+}
+
+COMMON_API void Str_Cat(char* dst, int dst_cap, const char* src) {
+#if defined(_MSC_VER)
+	errno_t e = strncat_s(dst, dst_cap, src, _TRUNCATE);
+	if (e) {
+		printf("strncat_s error: %d\n", e);
+	}
+#endif
+
+#if defined(__GNUC__)
+	int l = (int)strlen(dst);
+	if (dst_cap > (l + 1)) {
+		strncat(dst, src, dst_cap - l - 1);
+	}
 #endif
 }
 
@@ -702,6 +849,18 @@ COMMON_API bool Str_ExtractFileName(const char* path, char* filename, int filena
 	return true;
 }
 
+COMMON_API bool Str_ReplaceFileNameExt(char* path, int path_cap, const char* new_ext) {
+	char* p_dot = strrchr(path, '.');
+	if (p_dot) {
+		p_dot[1] = '\0';
+		Str_Cat(path, path_cap, new_ext);
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
 // return number tokens
 
 COMMON_API int Str_Tokenize(const char* s, char** buffers, int each_buffer_size, int buffer_count) {
@@ -1051,10 +1210,21 @@ static bool Image_LoadBMP(const char* filename, image_s& image);
 static bool Image_LoadPNG(const char* filename, image_s& image);
 static bool Image_LoadTGA(const char* filename, image_s& image);
 
-COMMON_API bool Img_Create(int width, int height, image_s& image) {
+COMMON_API bool Img_Create(int width, int height, image_format_t fmt, image_s& image) {
 	image.width_ = width;
 	image.height_ = height;
-	image.pixels_ = (byte_t*)TEMP_ALLOC(width * height * 4);
+	image.format_ = fmt;
+	image.pixels_ = nullptr;
+
+	if (fmt == image_format_t::R8G8B8A8) {
+		image.pixels_ = (byte_t*)TEMP_ALLOC(width * height * 4);
+	}
+	else if (fmt == image_format_t::R16G16B16A16_FLOAT) {
+		image.pixels_ = (byte_t*)TEMP_ALLOC(width * height * 8);
+	}
+	else {
+		printf("Unknown image format %d\n", (int)fmt);
+	}
 
 	return image.pixels_ != nullptr;
 }
@@ -1074,6 +1244,10 @@ COMMON_API bool Img_Load(const char* filename, image_s& image) {
 	}
 	else if (Str_ICmp(ext, ".tga") == 0) {
 		return Image_LoadTGA(filename, image);
+	}
+	else if (Str_ICmp(ext, ".dds") == 0) {
+		bool Image_LoadDDS(const char* filename, image_s & image);
+		return Image_LoadDDS(filename, image);
 	}
 	else {
 		printf("Unsupported image file format %s.\n", ext + 1);
@@ -1190,6 +1364,7 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 
 			image.width_ = infohead->biWidth;
 			image.height_ = infohead->biHeight;
+			image.format_ = image_format_t::R8G8B8A8;
 			image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
 
 			if (!image.pixels_) {
@@ -1224,6 +1399,7 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 			// http://msdn.microsoft.com/en-us/library/windows/desktop/dd183383%28v=vs.85%29.aspx
 			image.width_ = infohead->biWidth;
 			image.height_ = infohead->biHeight;
+			image.format_ = image_format_t::R8G8B8A8;
 			image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
 
 			if (!image.pixels_) {
@@ -1334,6 +1510,7 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 
 		image.width_ = infohead->biWidth;
 		image.height_ = infohead->biHeight;
+		image.format_ = image_format_t::R8G8B8A8;
 		image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
 
 		if (!image.pixels_) {
@@ -1377,6 +1554,7 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 
 		image.width_ = infohead->biWidth;
 		image.height_ = infohead->biHeight;
+		image.format_ = image_format_t::R8G8B8A8;
 		image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
 
 		if (!image.pixels_) {
@@ -1416,6 +1594,7 @@ static bool Image_LoadBMP(const char* filename, image_s& image) {
 
 		image.width_ = infohead->biWidth;
 		image.height_ = infohead->biHeight;
+		image.format_ = image_format_t::R8G8B8A8;
 		image.pixels_ = (byte_t*)TEMP_ALLOC(infohead->biWidth * 4 * infohead->biHeight);
 
 		if (!image.pixels_) {
@@ -1469,6 +1648,7 @@ static bool Image_LoadPNG(const char* filename, image_s& image) {
 
 			image.width_ = (int)image_png.width;
 			image.height_ = (int)image_png.height;
+			image.format_ = image_format_t::R8G8B8A8;
 			image.pixels_ = (byte_t*)TEMP_ALLOC(image_png.height * image_png.width * 4 /* rgba */);
 
 			if (image.pixels_) {
@@ -1665,6 +1845,7 @@ static bool Image_LoadTGA(const char* filename, image_s& image) {
 
 	image.width_ = head->width;
 	image.height_ = head->height;
+	image.format_ = image_format_t::R8G8B8A8;
 	image.pixels_ = (byte_t*)TEMP_ALLOC(numpixels * 4);
 
 	File_FreeBinary(buffer);
@@ -1688,13 +1869,15 @@ static bool Image_LoadTGA(const char* filename, image_s& image) {
 }
 
 static bool Image_HasAlpha(const image_s& image) {
-	int linewidth = image.width_ * 4;
-	for (int y = 0; y < image.height_; ++y) {
-		const byte_t* line = image.pixels_ + y * linewidth;
-		for (int x = 0; x < image.width_; ++x) {
-			const byte_t* pixel = line + x * 4;
-			if (pixel[3] < 255) {
-				return true;
+	if (image.format_ == image_format_t::R8G8B8A8) {
+		int linewidth = image.width_ * 4;
+		for (int y = 0; y < image.height_; ++y) {
+			const byte_t* line = image.pixels_ + y * linewidth;
+			for (int x = 0; x < image.width_; ++x) {
+				const byte_t* pixel = line + x * 4;
+				if (pixel[3] < 255) {
+					return true;
+				}
 			}
 		}
 	}
@@ -1703,166 +1886,245 @@ static bool Image_HasAlpha(const image_s& image) {
 }
 
 static bool Image_SaveBMP(const char* filename, const image_s& image) {
-	if (Image_HasAlpha(image)) {
-		int linewidth = image.width_ * 4;
+	if (image.format_ == image_format_t::R8G8B8A8) {
+		if (Image_HasAlpha(image)) {
+			int linewidth = image.width_ * 4;
 
-		bmpfilehead_s filehead;
+			bmpfilehead_s filehead;
 
-		filehead.bfType = 0x4d42;
-		filehead.bfOffBits = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s);
-		filehead.bfSize = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + linewidth * image.height_;
-		filehead.bfReserved1 = 0;
-		filehead.bfReserved2 = 0;
+			filehead.bfType = 0x4d42;
+			filehead.bfOffBits = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s);
+			filehead.bfSize = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + linewidth * image.height_;
+			filehead.bfReserved1 = 0;
+			filehead.bfReserved2 = 0;
 
-		bmpinfohead_s infohead;
+			bmpinfohead_s infohead;
 
-		infohead.biBitCount = 32;
-		infohead.biClrImportant = 0;
-		infohead.biClrUsed = 0;
-		infohead.biCompression = 0;
-		infohead.biHeight = image.height_;
-		infohead.biPlanes = 1;
-		infohead.biSize = sizeof(infohead);
-		infohead.biSizeImage = 0;
-		infohead.biWidth = image.width_;
-		infohead.biXPelsPerMeter = 0;
-		infohead.biYPelsPerMeter = 0;
+			infohead.biBitCount = 32;
+			infohead.biClrImportant = 0;
+			infohead.biClrUsed = 0;
+			infohead.biCompression = 0;
+			infohead.biHeight = image.height_;
+			infohead.biPlanes = 1;
+			infohead.biSize = sizeof(infohead);
+			infohead.biSizeImage = 0;
+			infohead.biWidth = image.width_;
+			infohead.biXPelsPerMeter = 0;
+			infohead.biYPelsPerMeter = 0;
 
-		unsigned char* dst = (unsigned char*)TEMP_ALLOC(image.height_ * linewidth);
-		if (!dst) {
-			return false;
-		}
+			unsigned char* dst = (unsigned char*)TEMP_ALLOC(image.height_ * linewidth);
+			if (!dst) {
+				return false;
+			}
 
-		for (int h = 0; h < image.height_; ++h) {
-			unsigned char* dstline = dst + h * linewidth;
-			const unsigned char* srcline = image.pixels_ + h * linewidth;
-			for (int w = 0; w < image.width_; ++w) {
-				unsigned char* dstclr = dstline + w * 4;
-				const unsigned char* srcclr = srcline + w * 4;
-				dstclr[0] = srcclr[2]; // B
-				dstclr[1] = srcclr[1]; // G
-				dstclr[2] = srcclr[0]; // R
-				dstclr[3] = srcclr[3];
+			for (int h = 0; h < image.height_; ++h) {
+				unsigned char* dstline = dst + h * linewidth;
+				const unsigned char* srcline = image.pixels_ + h * linewidth;
+				for (int w = 0; w < image.width_; ++w) {
+					unsigned char* dstclr = dstline + w * 4;
+					const unsigned char* srcclr = srcline + w * 4;
+					dstclr[0] = srcclr[2]; // B
+					dstclr[1] = srcclr[1]; // G
+					dstclr[2] = srcclr[0]; // R
+					dstclr[3] = srcclr[3];
+				}
+			}
+
+			FILE* f = File_Open(filename, "wb");
+			if (f) {
+				fwrite(&filehead, sizeof(filehead), 1, f);
+				fwrite(&infohead, sizeof(infohead), 1, f);
+				fwrite(dst, image.height_ * linewidth, 1, f);
+				fclose(f);
+
+				TEMP_FREE(dst);
+
+				return true;
+			}
+			else {
+				TEMP_FREE(dst);
+
+				return false;
 			}
 		}
-
-		FILE* f = File_Open(filename, "wb");
-		if (f) {
-			fwrite(&filehead, sizeof(filehead), 1, f);
-			fwrite(&infohead, sizeof(infohead), 1, f);
-			fwrite(dst, image.height_ * linewidth, 1, f);
-			fclose(f);
-
-			TEMP_FREE(dst);
-
-			return true;
-		}
 		else {
-			TEMP_FREE(dst);
+			int src_linewidth = image.width_ * 4;
+			int dst_linewidth = (image.width_ * 3 + 3) & ~3;
 
-			return false;
+			bmpfilehead_s filehead;
+
+			filehead.bfType = 0x4d42;
+			filehead.bfOffBits = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s);
+			filehead.bfSize = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + dst_linewidth * image.height_;
+			filehead.bfReserved1 = 0;
+			filehead.bfReserved2 = 0;
+
+			bmpinfohead_s infohead;
+
+			infohead.biBitCount = 24;
+			infohead.biClrImportant = 0;
+			infohead.biClrUsed = 0;
+			infohead.biCompression = 0;
+			infohead.biHeight = image.height_;
+			infohead.biPlanes = 1;
+			infohead.biSize = sizeof(infohead);
+			infohead.biSizeImage = 0;
+			infohead.biWidth = image.width_;
+			infohead.biXPelsPerMeter = 0;
+			infohead.biYPelsPerMeter = 0;
+
+			unsigned char* dst = (unsigned char*)TEMP_ALLOC(image.height_ * dst_linewidth);
+			if (!dst) {
+				return false;
+			}
+
+			for (int h = 0; h < image.height_; ++h) {
+				unsigned char* dstline = dst + h * dst_linewidth;
+				const unsigned char* srcline = image.pixels_ + h * src_linewidth;
+				for (int w = 0; w < image.width_; ++w) {
+					unsigned char* dstclr = dstline + w * 3;
+					const unsigned char* srcclr = srcline + w * 4;
+					dstclr[0] = srcclr[2]; // B
+					dstclr[1] = srcclr[1]; // G
+					dstclr[2] = srcclr[0]; // R
+				}
+			}
+
+			FILE* f = File_Open(filename, "wb");
+			if (f) {
+				fwrite(&filehead, sizeof(filehead), 1, f);
+				fwrite(&infohead, sizeof(infohead), 1, f);
+				fwrite(dst, image.height_ * dst_linewidth, 1, f);
+				fclose(f);
+
+				TEMP_FREE(dst);
+
+				return true;
+			}
+			else {
+				TEMP_FREE(dst);
+
+				return false;
+			}
 		}
 	}
+	else if (image.format_ == image_format_t::R16G16B16A16_FLOAT) {
+		printf("TODO: save image_format_t::R16G16B16A16_FLOAT to bmp");
+		return false;
+	}
 	else {
-		int src_linewidth = image.width_ * 4;
-		int dst_linewidth = (image.width_ * 3 + 3) & ~3;
-
-		bmpfilehead_s filehead;
-
-		filehead.bfType = 0x4d42;
-		filehead.bfOffBits = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s);
-		filehead.bfSize = sizeof(bmpfilehead_s) + sizeof(bmpinfohead_s) + dst_linewidth * image.height_;
-		filehead.bfReserved1 = 0;
-		filehead.bfReserved2 = 0;
-
-		bmpinfohead_s infohead;
-
-		infohead.biBitCount = 24;
-		infohead.biClrImportant = 0;
-		infohead.biClrUsed = 0;
-		infohead.biCompression = 0;
-		infohead.biHeight = image.height_;
-		infohead.biPlanes = 1;
-		infohead.biSize = sizeof(infohead);
-		infohead.biSizeImage = 0;
-		infohead.biWidth = image.width_;
-		infohead.biXPelsPerMeter = 0;
-		infohead.biYPelsPerMeter = 0;
-
-		unsigned char* dst = (unsigned char*)TEMP_ALLOC(image.height_ * dst_linewidth);
-		if (!dst) {
-			return false;
-		}
-
-		for (int h = 0; h < image.height_; ++h) {
-			unsigned char* dstline = dst + h * dst_linewidth;
-			const unsigned char* srcline = image.pixels_ + h * src_linewidth;
-			for (int w = 0; w < image.width_; ++w) {
-				unsigned char* dstclr = dstline + w * 3;
-				const unsigned char* srcclr = srcline + w * 4;
-				dstclr[0] = srcclr[2]; // B
-				dstclr[1] = srcclr[1]; // G
-				dstclr[2] = srcclr[0]; // R
-			}
-		}
-
-		FILE* f = File_Open(filename, "wb");
-		if (f) {
-			fwrite(&filehead, sizeof(filehead), 1, f);
-			fwrite(&infohead, sizeof(infohead), 1, f);
-			fwrite(dst, image.height_ * dst_linewidth, 1, f);
-			fclose(f);
-
-			TEMP_FREE(dst);
-
-			return true;
-		}
-		else {
-			TEMP_FREE(dst);
-
-			return false;
-		}
+		printf("Unknown image format %d\n", (int)image.format_);
+		return false;
 	}
 }
 
 static bool Image_SavePNG(const char* filename, const image_s& image) {
-	png_uint_32 dst_format = PNG_FORMAT_RGBA;
+	if (image.format_ == image_format_t::R8G8B8A8) {
+		png_uint_32 dst_format = PNG_FORMAT_RGBA;	// PNG_FORMAT_RGB
 
-	// PNG_FORMAT_RGB
+		png_image image_png;
+		memset(&image_png, 0, sizeof(image_png));
+		image_png.version = PNG_IMAGE_VERSION;
+		image_png.width = image.width_;
+		image_png.height = image.height_;
+		image_png.format = dst_format;
 
-	png_image image_png;
-	memset(&image_png, 0, sizeof(image_png));
-	image_png.version = PNG_IMAGE_VERSION;
-	image_png.width = image.width_;
-	image_png.height = image.height_;
-	image_png.format = dst_format;
+		size_t size = PNG_IMAGE_SIZE(image_png); // get image size
+		png_bytep buffer_png = (png_bytep)TEMP_ALLOC(size);
 
-	size_t size = PNG_IMAGE_SIZE(image_png); // get image size
-	png_bytep buffer_png = (png_bytep)TEMP_ALLOC(size);
+		// convert height direction
+		for (int h = 0; h < image.height_; ++h) {
+			const byte_t* src_line = image.pixels_ + h * image.width_ * 4;
+			png_bytep dst_line = buffer_png + (image.height_ - h - 1) * image.width_ * 4;
 
-	// convert height direction
-	for (int h = 0; h < image.height_; ++h) {
-		const byte_t * src_line = image.pixels_ + h * image.width_ * 4;
-		png_bytep dst_line = buffer_png + (image.height_ - h - 1) * image.width_ * 4;
+			memcpy(dst_line, src_line, image.width_ * 4);
+		}
 
-		memcpy(dst_line, src_line, image.width_ * 4);
+		// save to file
+		bool ok = false;
+
+		if (png_image_write_to_file(&image_png, filename, 0, buffer_png, PNG_IMAGE_ROW_STRIDE(image_png), nullptr)) {
+			png_image_free(&image_png);
+			ok = true;
+		}
+		else {
+			printf("png_image_write_to_file failed\n");
+		}
+
+		TEMP_FREE(buffer_png);
+		buffer_png = nullptr;
+
+		return ok;
 	}
+	else if (image.format_ == image_format_t::R16G16B16A16_FLOAT) {
 
-	// save to file
-	bool ok = false;
+		png_uint_32 dst_format = PNG_FORMAT_RGBA;
 
-	if (png_image_write_to_file(&image_png, filename, 0, buffer_png, PNG_IMAGE_ROW_STRIDE(image_png), nullptr)) {
-		png_image_free(&image_png);
-		ok = true;
+		png_image image_png;
+		memset(&image_png, 0, sizeof(image_png));
+		image_png.version = PNG_IMAGE_VERSION;
+		image_png.width = image.width_;
+		image_png.height = image.height_;
+		image_png.format = dst_format;
+
+		size_t size = PNG_IMAGE_SIZE(image_png); // get image size
+		png_bytep buffer_png = (png_bytep)TEMP_ALLOC(size);
+
+		const float gamma_correction = 2.2f;
+
+		// convert height direction
+		for (int h = 0; h < image.height_; ++h) {
+			const float16_t * src_line = (const float16_t*)image.pixels_ + h * image.width_ * 4;
+			png_bytep dst_line = buffer_png + (image.height_ - h - 1) * image.width_ * 4;
+
+			for (int x = 0; x < image.width_; ++x) {
+				const float16_t* src_p = src_line + x * 4;
+				png_bytep dst_p = dst_line + x * 4;
+
+				float fr = HalfFloatToFloat(src_p[0]);
+				float fg = HalfFloatToFloat(src_p[1]);
+				float fb = HalfFloatToFloat(src_p[2]);
+				float fa = HalfFloatToFloat(src_p[3]);
+
+				// printf("%f,%f,%f,%f\n", r, g, b, a);
+
+				byte_t br = (byte_t)((fr + 1.0f) * 0.5f * 255.0f);
+				byte_t bg = (byte_t)((fg + 1.0f) * 0.5f * 255.0f);
+				byte_t bb = (byte_t)((fb + 1.0f) * 0.5f * 255.0f);
+				byte_t ba = (byte_t)((fa + 1.0f) * 0.5f * 255.0f);
+
+				byte_t br2 = (byte_t)(255.0f * std::powf((float)br / 255.0f, gamma_correction));
+				byte_t bg2 = (byte_t)(255.0f * std::powf((float)bg / 255.0f, gamma_correction));
+				byte_t bb2 = (byte_t)(255.0f * std::powf((float)bb / 255.0f, gamma_correction));
+				byte_t ba2 = (byte_t)(255.0f * std::powf((float)ba / 255.0f, gamma_correction));
+
+				dst_p[0] = br2;
+				dst_p[1] = bg2;
+				dst_p[2] = bb2;
+				dst_p[3] = ba2;
+			}
+		}
+
+		// save to file
+		bool ok = false;
+
+		if (png_image_write_to_file(&image_png, filename, 0, buffer_png, PNG_IMAGE_ROW_STRIDE(image_png), nullptr)) {
+			png_image_free(&image_png);
+			ok = true;
+		}
+		else {
+			printf("png_image_write_to_file failed\n");
+		}
+
+		TEMP_FREE(buffer_png);
+		buffer_png = nullptr;
+
+		return ok;
 	}
 	else {
-		printf("png_image_write_to_file failed\n");
+		printf("Unknown image format %d\n", (int)image.format_);
+		return false;
 	}
-
-	TEMP_FREE(buffer_png);
-	buffer_png = nullptr;
-
-	return ok;
 }
 
 /*
@@ -2028,7 +2290,7 @@ COMMON_API bool	Terrain_Texture(const terrain_texture_tiles_s& tile_images,
 		}
 	}
 
-	if (!Img_Create(width, height, texture)) {
+	if (!Img_Create(width, height, image_format_t::R8G8B8A8, texture)) {
 		for (int i = 0; i < 4; ++i) {
 			if (tiles[i].image_.pixels_) {
 				Img_Free(tiles[i].image_);
@@ -2534,9 +2796,421 @@ static bool Model_LoadObj(const char* filename, model_s& model) {
 
 /*
 ================================================================================
+helper
+================================================================================
+*/
+COMMON_API void CalculateFrustumCorners(const frustum_s& frustum, glm::vec3 corners[8]) {
+	float tan = std::tanf(glm::radians(frustum.fovy_ * 0.5f));
+
+	float z_near = frustum.z_near_;
+	float z_far = frustum.z_far_;
+
+	float y_near = z_near * tan;
+	float y_far = z_far * tan;
+
+	float x_near = y_near * frustum.ratio_;
+	float x_far = y_far * frustum.ratio_;
+
+	corners[0] = glm::vec3(-x_near, -y_near, -z_near);
+	corners[1] = glm::vec3( x_near, -y_near, -z_near);
+	corners[2] = glm::vec3( x_near,  y_near, -z_near);
+	corners[3] = glm::vec3(-x_near,  y_near, -z_near);
+
+	corners[4] = glm::vec3(-x_far, -y_far, -z_far);
+	corners[5] = glm::vec3( x_far, -y_far, -z_far);
+	corners[6] = glm::vec3( x_far,  y_far, -z_far);
+	corners[7] = glm::vec3(-x_far,  y_far, -z_far);
+
+	glm::vec3 forward = glm::normalize(frustum.view_target_ - frustum.view_pos_);
+	glm::vec3 right = glm::normalize(glm::cross(forward, frustum.view_up_));
+	glm::vec3 up = glm::cross(right, forward);
+
+#if 1
+	glm::mat3 m(right, up, -forward);
+#else
+	// equal to
+
+	glm::mat3 m;
+	m[0].x = right.x;
+	m[1].x = right.y;
+	m[2].x = right.z;
+
+	m[0].y = up.x;
+	m[1].y = up.y;
+	m[2].y = up.z;
+
+	m[0].z = -forward.x;
+	m[1].z = -forward.y;
+	m[2].z = -forward.z;
+
+	// invert
+	m = glm::transpose(m);
+#endif
+
+	// convert from view space to world space
+	for (int i = 0; i < 8; ++i) {
+		corners[i] = m * corners[i];
+		corners[i] += frustum.view_pos_;
+	}
+}
+
+COMMON_API void	CalculateVec3ArrayCenter(const glm::vec3* arr, int array_sz, glm::vec3& center) {
+	glm::vec3 sum = glm::vec3(0.0f);
+	float inv = 1.0f / array_sz;
+
+	for (int i = 0; i < array_sz; ++i) {
+		sum += arr[i];
+	}
+
+	center = sum * inv;
+}
+
+COMMON_API float CalculateMaxDistToVec3Array(const glm::vec3* arr, int array_sz, const glm::vec3& pos) {
+	float max_dist = 0.0f;
+	
+	for (int i = 0; i < 8; ++i) {
+		glm::vec3 delta = pos - arr[i];
+		float len = glm::length(delta);
+		if (len > max_dist) {
+			max_dist = len;
+		}
+	}
+
+	return max_dist;
+}
+
+/*
+================================================================================
 vulkan helper
 ================================================================================
 */
+COMMON_API const char* Vk_FormatToStr(VkFormat format) {
+	switch (format) {
+		RET_CASE_ID_TO_STR(VK_FORMAT_UNDEFINED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R4G4_UNORM_PACK8);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R4G4B4A4_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B4G4R4A4_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R5G6B5_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B5G6R5_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R5G5B5A1_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B5G5R5A1_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A1R5G5B5_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8_SRGB);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8_SRGB);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8_SRGB);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8_SRGB);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R8G8B8A8_SRGB);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8A8_SRGB);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_UNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_SNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_USCALED_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_SSCALED_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_UINT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_SINT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A8B8G8R8_SRGB_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2R10G10B10_SNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2R10G10B10_USCALED_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2R10G10B10_SSCALED_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2R10G10B10_UINT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2R10G10B10_SINT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2B10G10R10_SNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2B10G10R10_USCALED_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2B10G10R10_SSCALED_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2B10G10R10_UINT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A2B10G10R10_SINT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_SNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_USCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_SSCALED);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R16G16B16A16_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32B32_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32B32_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32B32_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32B32A32_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32B32A32_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R32G32B32A32_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64B64_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64B64_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64B64_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64B64A64_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64B64A64_SINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R64G64B64A64_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B10G11R11_UFLOAT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_E5B9G9R9_UFLOAT_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_D16_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_X8_D24_UNORM_PACK32);
+		RET_CASE_ID_TO_STR(VK_FORMAT_D32_SFLOAT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_S8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_D16_UNORM_S8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_D24_UNORM_S8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_D32_SFLOAT_S8_UINT);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC1_RGB_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC1_RGB_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC1_RGBA_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC1_RGBA_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC2_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC2_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC3_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC3_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC4_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC4_SNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC5_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC5_SNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC6H_UFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC6H_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC7_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_BC7_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_EAC_R11_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_EAC_R11_SNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_EAC_R11G11_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_EAC_R11G11_SNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_4x4_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_4x4_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x4_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x4_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x5_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x5_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x5_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x5_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x6_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x6_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x5_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x5_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x6_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x6_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x8_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x8_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x5_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x5_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x6_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x6_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x8_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x8_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x10_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x10_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x10_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x10_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x12_UNORM_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x12_SRGB_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8B8G8R8_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8G8_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8R8_2PLANE_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R10X6_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R10X6G10X6_UNORM_2PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R12X4_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R12X4G12X4_UNORM_2PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16B16G16R16_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_B16G16R16G16_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16R16_2PLANE_420_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16R16_2PLANE_422_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8R8_2PLANE_444_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16R16_2PLANE_444_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A4R4G4B4_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_A4B4G4R4_UNORM_PACK16);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK);
+		RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_A1B5G5R5_UNORM_PACK16);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_A8_UNORM);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG);
+		RET_CASE_ID_TO_STR(VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_SFIXED5_NV);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8B8G8R8_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_B8G8R8G8_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8R8_2PLANE_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R10X6_UNORM_PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R10X6G10X6_UNORM_2PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R12X4_UNORM_PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R12X4G12X4_UNORM_2PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16B16G16R16_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_B16G16R16G16_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16R16_2PLANE_420_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16R16_2PLANE_422_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G8_B8R8_2PLANE_444_UNORM_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_G16_B16R16_2PLANE_444_UNORM_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_R16G16_S10_5_NV);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR);
+		//RET_CASE_ID_TO_STR(VK_FORMAT_A8_UNORM_KHR);
+	default:
+		return "Unknow VkFormat";
+	}
+}
+
+COMMON_API const char* Vk_PresentModelToStr(VkPresentModeKHR present_mode) {
+	switch (present_mode) {
+		RET_CASE_ID_TO_STR(VK_PRESENT_MODE_IMMEDIATE_KHR);
+		RET_CASE_ID_TO_STR(VK_PRESENT_MODE_MAILBOX_KHR);
+		RET_CASE_ID_TO_STR(VK_PRESENT_MODE_FIFO_KHR);
+		RET_CASE_ID_TO_STR(VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+		RET_CASE_ID_TO_STR(VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR);
+		RET_CASE_ID_TO_STR(VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR);
+		//RET_CASE_ID_TO_STR(VK_PRESENT_MODE_FIFO_LATEST_READY_EXT);
+	default:
+		return "Unknow VkPresentModeKHR";
+	}
+}
 
 static void Vk_PushDescriptorSetLayoutBinding(std::vector<VkDescriptorSetLayoutBinding>& bindings,
 	uint32_t binding, VkDescriptorType descriptor_type, VkShaderStageFlags stage_flags) 
@@ -2575,10 +3249,22 @@ void Vk_PushDescriptorSetLayoutBinding_SBO(std::vector<VkDescriptorSetLayoutBind
 }
 
 void Vk_PushWriteDescriptorSet_UBO(
-	std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
-	VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer)
+	update_desc_sets_buffer_s& buffer,
+	VkDescriptorSet vk_desc_set, uint32_t binding,
+	VkBuffer vk_buffer, VkDeviceSize vk_buffer_offset, VkDeviceSize vk_buffer_range)
 {
-	write_descriptor_sets.push_back(
+	VkDescriptorBufferInfo* desc_buf_info = (VkDescriptorBufferInfo*)TEMP_ALLOC(sizeof(VkDescriptorBufferInfo));
+	if (!desc_buf_info) {
+		return;
+	}
+
+	desc_buf_info->buffer = vk_buffer;
+	desc_buf_info->offset = vk_buffer_offset;
+	desc_buf_info->range = vk_buffer_range;
+
+	buffer.desc_buf_infos_.push_back(desc_buf_info);
+
+	buffer.write_descriptor_sets_.push_back(
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.pNext = nullptr,
@@ -2588,16 +3274,16 @@ void Vk_PushWriteDescriptorSet_UBO(
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			.pImageInfo = nullptr,
-			.pBufferInfo = &buffer.desc_buffer_info_,
+			.pBufferInfo = desc_buf_info,
 			.pTexelBufferView = nullptr
 		});
 }
 
 void Vk_PushWriteDescriptorSet_Tex(
-	std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+	update_desc_sets_buffer_s& buffer,
 	VkDescriptorSet vk_desc_set, uint32_t binding, const vk_image_s& texture)
 {
-	write_descriptor_sets.push_back(
+	buffer.write_descriptor_sets_.push_back(
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.pNext = nullptr,
@@ -2613,10 +3299,22 @@ void Vk_PushWriteDescriptorSet_Tex(
 }
 
 COMMON_API void Vk_PushWriteDescriptorSet_SBO(
-	std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
-	VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer) 
+	update_desc_sets_buffer_s& buffer,
+	VkDescriptorSet vk_desc_set, uint32_t binding,
+	VkBuffer vk_buffer, VkDeviceSize vk_buffer_offset, VkDeviceSize vk_buffer_range)
 {
-	write_descriptor_sets.push_back(
+	VkDescriptorBufferInfo* desc_buf_info = (VkDescriptorBufferInfo*)TEMP_ALLOC(sizeof(VkDescriptorBufferInfo));
+	if (!desc_buf_info) {
+		return;
+	}
+
+	desc_buf_info->buffer = vk_buffer;
+	desc_buf_info->offset = vk_buffer_offset;
+	desc_buf_info->range = vk_buffer_range;
+
+	buffer.desc_buf_infos_.push_back(desc_buf_info);
+
+	buffer.write_descriptor_sets_.push_back(
 		{
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 			.pNext = nullptr,
@@ -2626,7 +3324,7 @@ COMMON_API void Vk_PushWriteDescriptorSet_SBO(
 			.descriptorCount = 1,
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.pImageInfo = nullptr,
-			.pBufferInfo = &buffer.desc_buffer_info_,
+			.pBufferInfo = desc_buf_info,
 			.pTexelBufferView = nullptr
 		});
 }

@@ -17,7 +17,7 @@ ShadowMapDemo::ShadowMapDemo() :
 	model_floor_(this),
 	model_object_(this),
 	vk_sampler_depth_(VK_NULL_HANDLE),
-	vk_depth_format_(VK_FORMAT_D16_UNORM),
+	vk_shadow_map_depth_format_(VK_FORMAT_D16_UNORM),
 	vk_framebuffer_depth_(VK_NULL_HANDLE),
 	vk_render_pass_depth_(VK_NULL_HANDLE),
 	vk_desc_set_layout_ubo4_tex_(VK_NULL_HANDLE),
@@ -38,6 +38,9 @@ ShadowMapDemo::ShadowMapDemo() :
 #if defined(_WIN32)
 	cfg_demo_win_class_name_ = TEXT("Shadow Map");
 #endif
+
+	z_near_ = 2.0f;
+	z_far_ = 32.0f;
 
 	light_dir_ = glm::normalize(glm::vec3(-1.0, 0.0f, -1.0f));
 
@@ -64,6 +67,8 @@ bool ShadowMapDemo::Init() {
 		16, 0, 16, 16)) {
 		return false;
 	}
+
+	vk_shadow_map_depth_format_ = GetIdealDepthFormat();
 
 	if (!CreateUniformBuffers()) {
 		return false;
@@ -161,6 +166,8 @@ bool ShadowMapDemo::Init() {
 	BuildCommandBuffers();
 
 	enable_display_ = true;
+
+	printf("F2: toggle draw overlay\n");
 
 	return true;
 }
@@ -427,13 +434,35 @@ void ShadowMapDemo::BuildCommandBuffers() {
 void ShadowMapDemo::Update() {
 	// light view
 
+	frustum_s frustum = {
+		.z_near_ = z_near_,
+		.z_far_ = z_far_,
+		.fovy_ = fovy_,
+		.ratio_ = (float)cfg_viewport_cx_ / cfg_viewport_cy_,
+		.view_pos_ = camera_.pos_,
+		.view_target_ = camera_.target_,
+		.view_up_ = camera_.up_
+	};
+
+	glm::vec3 frustum_corners[8];
+	CalculateFrustumCorners(frustum, frustum_corners);
+
+	glm::vec3 frustum_center;
+	CalculateVec3ArrayCenter(frustum_corners, 8, frustum_center);
+
+	float frustum_radius = CalculateMaxDistToVec3Array(frustum_corners, 8, frustum_center);
+
+	glm::vec3 light_pos = frustum_center;
+	glm::vec3 light_target = light_pos + light_dir_;
+
+	glm::mat4 light_view = glm::lookAt(light_pos, light_target, glm::vec3(0.0f, 0.0f, 1.0f));
+	glm::mat4 light_proj = glm::orthoRH_ZO(
+		-frustum_radius, frustum_radius,
+		-frustum_radius, frustum_radius,
+		-frustum_radius, frustum_radius);
+
 	ubo_mat_s ubo_mvp = {};
 
-	glm::mat4 light_proj = glm::perspectiveRH_ZO(glm::radians(45.0f), 1.0f, Z_NEAR, Z_FAR);
-
-	
-
-	glm::mat4 light_view = glm::lookAt(glm::vec3(16.0f, 0.0f, 16.0f), glm::vec3(0.0), glm::vec3(0.0f, 0.0f, 1.0f));
 	glm::mat4 model;
 	GetModelMatrix(model);
 
@@ -447,9 +476,7 @@ void ShadowMapDemo::Update() {
 
 	ubo_mvp_sep_s ubo_mvp_sep = {};
 
-	ubo_mvp_sep.proj_ = glm::perspectiveRH_ZO(glm::radians(45.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, Z_NEAR, Z_FAR);
-
+	GetProjMatrix(ubo_mvp_sep.proj_);
 	GetViewMatrix(ubo_mvp_sep.view_);
 
 	ubo_mvp_sep.model_ = glm::mat4(1.0f);
@@ -518,7 +545,7 @@ bool ShadowMapDemo::CreateRenderPass_Depth() {
 	std::array<VkAttachmentDescription, 1> attachment_descs;
 
 	attachment_descs[0].flags = 0;
-	attachment_descs[0].format = vk_depth_format_;
+	attachment_descs[0].format = vk_shadow_map_depth_format_;
 	attachment_descs[0].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachment_descs[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachment_descs[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -578,10 +605,10 @@ bool ShadowMapDemo::CreateRenderPass_Depth() {
 }
 
 bool ShadowMapDemo::CreateDepthImage() {
-	return Create2DImage(vk_image_depth_, vk_depth_format_, VK_IMAGE_TILING_OPTIMAL,
+	return Create2DImage(vk_image_depth_, vk_shadow_map_depth_format_, VK_IMAGE_TILING_OPTIMAL,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-		FRAMEBUFFER_DIM, FRAMEBUFFER_DIM, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		VK_IMAGE_ASPECT_DEPTH_BIT, vk_sampler_depth_, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+		FRAMEBUFFER_DIM, FRAMEBUFFER_DIM, 1, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D, vk_sampler_depth_, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 }
 
 bool ShadowMapDemo::CreateDepthFramebuffer() {
@@ -672,31 +699,32 @@ bool ShadowMapDemo::AllocateDestriptorSets() {
 	vk_desc_set_mvp_fixed_light_ = sets[3];
 	vk_desc_set_mvp_viewer_light_fixed_ = sets[4];
 
-	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
+	update_desc_sets_buffer_s buffer;
 
 	// overlay
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_overlay_, 0, vk_ubo_mvp_overlay_);
-	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_desc_set_overlay_, 4, vk_image_depth_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_overlay_, 0, vk_ubo_mvp_overlay_.buffer_, 0, vk_ubo_mvp_overlay_.memory_size_);
+	Vk_PushWriteDescriptorSet_Tex(buffer, vk_desc_set_overlay_, 4, vk_image_depth_);
 
 	// object
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_light_, 0, vk_ubo_mvp_light_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_light_, 0, vk_ubo_mvp_light_.buffer_, 0, vk_ubo_mvp_light_.memory_size_);
 	
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_, 0, vk_ubo_mvp_sep_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_, 1, vk_ubo_mvp_light_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_, 2, vk_ubo_viewer_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_, 3, vk_ubo_light_);
-	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_desc_set_mvp_viewer_light_, 4, vk_image_depth_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_, 0, vk_ubo_mvp_sep_.buffer_, 0, vk_ubo_mvp_sep_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_, 1, vk_ubo_mvp_light_.buffer_, 0, vk_ubo_mvp_light_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_, 2, vk_ubo_viewer_.buffer_, 0, vk_ubo_viewer_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_, 3, vk_ubo_light_.buffer_, 0, vk_ubo_light_.memory_size_);
+	Vk_PushWriteDescriptorSet_Tex(buffer, vk_desc_set_mvp_viewer_light_, 4, vk_image_depth_);
 
 	// floor
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_fixed_light_, 0, vk_ubo_mvp_fixed_light_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_fixed_, 0, vk_ubo_mvp_sep_fixed_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_fixed_, 1, vk_ubo_mvp_fixed_light_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_fixed_, 2, vk_ubo_viewer_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_mvp_viewer_light_fixed_, 3, vk_ubo_light_);
-	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_desc_set_mvp_viewer_light_fixed_, 4, vk_image_depth_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_fixed_light_, 0, vk_ubo_mvp_fixed_light_.buffer_, 0, vk_ubo_mvp_fixed_light_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_fixed_, 0, vk_ubo_mvp_sep_fixed_.buffer_, 0, vk_ubo_mvp_sep_fixed_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_fixed_, 1, vk_ubo_mvp_fixed_light_.buffer_, 0, vk_ubo_mvp_fixed_light_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_fixed_, 2, vk_ubo_viewer_.buffer_, 0, vk_ubo_viewer_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_mvp_viewer_light_fixed_, 3, vk_ubo_light_.buffer_, 0, vk_ubo_light_.memory_size_);
+	Vk_PushWriteDescriptorSet_Tex(buffer, vk_desc_set_mvp_viewer_light_fixed_, 4, vk_image_depth_);
 
 	vkUpdateDescriptorSets(vk_device_,
-		(uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
+		(uint32_t)buffer.write_descriptor_sets_.size(), 
+		buffer.write_descriptor_sets_.data(), 0, nullptr);
 
 	return true;
 }
@@ -776,7 +804,7 @@ bool ShadowMapDemo::CreatePipeline_Depth() {
 		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 		.primitive_restart_enable_ = VK_FALSE,
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
-		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
+		.cull_mode_ = VK_CULL_MODE_NONE,
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 		.depth_test_enable_ = VK_TRUE,
 		.depth_write_enable_ = VK_TRUE,

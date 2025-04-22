@@ -420,6 +420,16 @@ INLINE__ void Mat4<REAL>::Perspective(REAL fovy_degree, REAL aspect, REAL znear,
 }
 
 template<class REAL>
+INLINE__ void Mat4<REAL>::Perspective_ZO(REAL fovy_degree, REAL aspect, REAL znear, REAL zfar) {
+	REAL t = tan(DegToRad(fovy_degree) * (REAL)0.5);
+
+	REAL tp = t * znear;
+	REAL rt = tp * aspect;
+
+	Frustum_ZO(-rt, rt, -tp, tp, znear, zfar);
+}
+
+template<class REAL>
 INLINE__ void Mat4<REAL>::Frustum(REAL left, REAL right, REAL bottom, REAL top, REAL znear, REAL zfar) {
 	memset(&elem_, 0, sizeof(elem_));
 
@@ -443,6 +453,29 @@ INLINE__ void Mat4<REAL>::Frustum(REAL left, REAL right, REAL bottom, REAL top, 
 }
 
 template<class REAL>
+INLINE__ void Mat4<REAL>::Frustum_ZO(REAL left, REAL right, REAL bottom, REAL top, REAL znear, REAL zfar) {
+	memset(&elem_, 0, sizeof(elem_));
+
+	REAL r_l = right - left;
+	REAL r_add_l = right + left;
+	REAL t_add_b = top + bottom;
+	REAL t_b = top - bottom;
+	REAL _2n = (REAL)2.0 * znear;
+	REAL f_add_n = zfar + znear;
+	REAL f_n = zfar - znear;
+
+	REAL inv_f_n = Inv(f_n);
+
+	elem_[0][0] = _2n / r_l;
+	elem_[1][1] = _2n / t_b;
+	elem_[2][0] = r_add_l / r_l;
+	elem_[2][1] = t_add_b / t_b;
+	elem_[2][2] = -zfar * inv_f_n;
+	elem_[2][3] = (REAL)-1.0;
+	elem_[3][2] = (REAL)-znear * zfar * inv_f_n;
+}
+
+template<class REAL>
 INLINE__ void Mat4<REAL>::Ortho(REAL left, REAL right, REAL bottom, REAL top, REAL near_, REAL far_) {
 	REAL r_l = right - left;
 	REAL t_b = top - bottom;
@@ -456,6 +489,23 @@ INLINE__ void Mat4<REAL>::Ortho(REAL left, REAL right, REAL bottom, REAL top, RE
 	elem_[3][0] = -(right + left) / r_l;
 	elem_[3][1] = -(top + bottom) / t_b;
 	elem_[3][2] = -(far_ + near_) / f_n;
+	elem_[3][3] = (REAL)1.0;
+}
+
+template<class REAL>
+INLINE__ void Mat4<REAL>::Ortho_ZO(REAL left, REAL right, REAL bottom, REAL top, REAL near_, REAL far_) {
+	REAL r_l = right - left;
+	REAL t_b = top - bottom;
+	REAL f_n = far_ - near_;
+
+	memset(&elem_, 0, sizeof(elem_));
+
+	elem_[0][0] = (REAL)2.0 / r_l;
+	elem_[1][1] = (REAL)2.0 / t_b;
+	elem_[2][2] = (REAL)-1.0 / f_n;
+	elem_[3][0] = -(right + left) / r_l;
+	elem_[3][1] = -(top + bottom) / t_b;
+	elem_[3][2] = -(near_) / f_n;
 	elem_[3][3] = (REAL)1.0;
 }
 

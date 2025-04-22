@@ -1,7 +1,7 @@
 file(GLOB SOURCES "*.cpp")
 file(GLOB HEADERS "*.h")
 
-set(SHADER_DIR "../../data/shaders/mesh_shader")
+set(SHADER_DIR "../../shaders/mesh_shader")
 file(GLOB SHADERS "${SHADER_DIR}/*.task" "${SHADER_DIR}/*.mesh" "${SHADER_DIR}/*.frag")
 
 source_group("shaders" FILES ${SHADERS})

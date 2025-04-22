@@ -243,14 +243,9 @@ bool NormalMappingDemo::CreateIndexBuffer() {
 		return false;
 	}
 
-	void* data = nullptr;
-	if (VK_SUCCESS != vkMapMemory(vk_device_, index_buffer_.memory_, 0, index_buffer_.memory_size_, 0, &data)) {
+	if (!UpdateBuffer(index_buffer_, index_buffer, index_buffer_size)) {
 		return false;
 	}
-
-	memcpy(data, index_buffer, index_buffer_size);
-
-	vkUnmapMemory(vk_device_, index_buffer_.memory_);
 
 	index_count_ = 6;
 
@@ -324,19 +319,18 @@ bool NormalMappingDemo::AllocDescriptorSets() {
 	vk_descriptorset_uniform_ = sets[0];
 	vk_descriptorset_sampler_ = sets[1];
 
+	update_desc_sets_buffer_s buffer;
 
-	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
-
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_uniform_,
-		0, uniform_buffer_mat_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_uniform_,
-		1, uniform_buffer_point_light_);
-	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_descriptorset_sampler_,
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_descriptorset_uniform_,
+		0, uniform_buffer_mat_.buffer_, 0, uniform_buffer_mat_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_descriptorset_uniform_,
+		1, uniform_buffer_point_light_.buffer_, 0, uniform_buffer_point_light_.memory_size_);
+	Vk_PushWriteDescriptorSet_Tex(buffer, vk_descriptorset_sampler_,
 		0, texture_color_);
-	Vk_PushWriteDescriptorSet_Tex(write_descriptor_sets, vk_descriptorset_sampler_,
+	Vk_PushWriteDescriptorSet_Tex(buffer, vk_descriptorset_sampler_,
 		1, texture_normal_);
 
-	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)buffer.write_descriptor_sets_.size(), buffer.write_descriptor_sets_.data(), 0, nullptr);
 
 	return true;
 }
@@ -523,9 +517,7 @@ void NormalMappingDemo::BuildCommandBuffer(VkPipeline pipeline) {
 void NormalMappingDemo::UpdateMVPUniformBuffer() {
 	ubo_mvp_sep_s ubo_mvp_sep = {};
 
-	ubo_mvp_sep.proj_ = glm::perspectiveRH_ZO(glm::radians(70.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 0.1f, 16.0f);
-
+	GetProjMatrix(ubo_mvp_sep.proj_);
 	GetViewMatrix(ubo_mvp_sep.view_);
 	GetModelMatrix(ubo_mvp_sep.model_);
 

@@ -49,6 +49,11 @@ struct alignas(16) ubo_directional_light_s {
     glm::vec4			    color_;
 };
 
+struct alignas(16) ubo_fog_s {
+    glm::vec4               params_; // x: start, y: end, z: scale, w: density
+    glm::vec4               color_;
+};
+
 /*
 ================================================================================
 buffer
@@ -58,9 +63,9 @@ buffer
 // uniform buffer & shader storage buffer
 struct vk_buffer_s {
     VkDeviceMemory		    memory_;
+    VkMemoryPropertyFlags   memory_prop_flags_;
     VkDeviceSize		    memory_size_;
     VkBuffer			    buffer_;
-    VkDescriptorBufferInfo  desc_buffer_info_;
 };
 
 struct vk_image_s {
@@ -68,6 +73,7 @@ struct vk_image_s {
     uint32_t                width_;
     uint32_t                height_;
     VkDeviceMemory		    memory_;
+    VkMemoryPropertyFlags   memory_prop_flags_;
     VkDeviceSize		    memory_size_;
     VkImageView			    image_view_;
     VkDescriptorImageInfo   desc_image_info_;
@@ -78,6 +84,10 @@ struct vk_image_s {
 vulkan helper
 ================================================================================
 */
+COMMON_API const char* Vk_FormatToStr(VkFormat format);
+COMMON_API const char* Vk_PresentModelToStr(VkPresentModeKHR present_mode);
+
+
 COMMON_API void Vk_PushDescriptorSetLayoutBinding_UBO(std::vector<VkDescriptorSetLayoutBinding> & bindings,
     uint32_t binding, VkShaderStageFlags stage_flags);
 
@@ -87,14 +97,26 @@ COMMON_API void Vk_PushDescriptorSetLayoutBinding_Tex(std::vector<VkDescriptorSe
 COMMON_API void Vk_PushDescriptorSetLayoutBinding_SBO(std::vector<VkDescriptorSetLayoutBinding>& bindings,
     uint32_t binding, VkShaderStageFlags stage_flags);
 
+struct update_desc_sets_buffer_s {
+    std::vector<VkWriteDescriptorSet>   write_descriptor_sets_;
+    std::vector<VkDescriptorBufferInfo*>    desc_buf_infos_;
+
+    ~update_desc_sets_buffer_s() {
+        for (auto& it : desc_buf_infos_) {
+            TEMP_FREE(it);
+        }
+    }
+};
+
 COMMON_API void Vk_PushWriteDescriptorSet_UBO(
-    std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
-    VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer);
+    update_desc_sets_buffer_s & buffer,
+    VkDescriptorSet vk_desc_set, uint32_t binding,
+    VkBuffer vk_buffer, VkDeviceSize vk_buffer_offset, VkDeviceSize vk_buffer_range);
 
 COMMON_API void Vk_PushWriteDescriptorSet_Tex(
-    std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
+    update_desc_sets_buffer_s& buffer,
     VkDescriptorSet vk_desc_set, uint32_t binding, const vk_image_s & texture);
 
-COMMON_API void Vk_PushWriteDescriptorSet_SBO(
-    std::vector<VkWriteDescriptorSet>& write_descriptor_sets,
-    VkDescriptorSet vk_desc_set, uint32_t binding, const vk_buffer_s& buffer);
+COMMON_API void Vk_PushWriteDescriptorSet_SBO(update_desc_sets_buffer_s& buffer,
+    VkDescriptorSet vk_desc_set, uint32_t binding,
+    VkBuffer vk_buffer, VkDeviceSize vk_buffer_offset, VkDeviceSize vk_buffer_range);

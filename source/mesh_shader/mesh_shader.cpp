@@ -26,6 +26,9 @@ MeshShaderDemo::MeshShaderDemo():
 	cfg_demo_win_class_name_ = TEXT("Mesh shader (F2: toggle wireframe & fill mode)");
 #endif
 
+	z_near_ = 4.0f;
+	z_far_ = 4096.0f;
+
 	vk_device_create_next_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
 	vk_device_create_next_.pNext = nullptr;
 	vk_device_create_next_.taskShader = VK_TRUE;	// enable task shader
@@ -224,16 +227,9 @@ bool MeshShaderDemo::CreateShaderStorageBuffers() {
 		return false;
 	}
 
-	void* data = nullptr;
-	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_color_table_.memory_, 0,
-		shader_storage_buffer_color_table_.memory_size_, 0 /*flags*/, &data)) {
-		printf("vkMapMemory error\n");
+	if (!UpdateBuffer(shader_storage_buffer_color_table_, color_table, sizeof(color_table))) {
 		return false;
 	}
-
-	memcpy(data, color_table, sizeof(color_table));
-
-	vkUnmapMemory(vk_device_, shader_storage_buffer_color_table_.memory_);
 
 	return true;
 }
@@ -277,14 +273,14 @@ bool MeshShaderDemo::AllocDemoDescriptorSet() {
 		return false;
 	}
 
-	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
+	update_desc_sets_buffer_s buffer;
 
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_, 0, uniform_buffer_mvp_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_, 1, uniform_buffer_terrain_);
-	Vk_PushWriteDescriptorSet_SBO(write_descriptor_sets, vk_descriptorset_, 2, shader_storage_buffer_heights_);
-	Vk_PushWriteDescriptorSet_SBO(write_descriptor_sets, vk_descriptorset_, 3, shader_storage_buffer_color_table_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_descriptorset_, 0, uniform_buffer_mvp_.buffer_, 0, uniform_buffer_mvp_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_descriptorset_, 1, uniform_buffer_terrain_.buffer_, 0, uniform_buffer_terrain_.memory_size_);
+	Vk_PushWriteDescriptorSet_SBO(buffer, vk_descriptorset_, 2, shader_storage_buffer_heights_.buffer_, 0, shader_storage_buffer_heights_.memory_size_);
+	Vk_PushWriteDescriptorSet_SBO(buffer, vk_descriptorset_, 3, shader_storage_buffer_color_table_.buffer_, 0, shader_storage_buffer_color_table_.memory_size_);
 
-	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)buffer.write_descriptor_sets_.size(), buffer.write_descriptor_sets_.data(), 0, nullptr);
 
 	return true;
 }
@@ -330,11 +326,11 @@ bool MeshShaderDemo::AllocDemoDescriptorSet2() {
 		return false;
 	}
 
-	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
+	update_desc_sets_buffer_s buffer;
 
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset2_, 0, uniform_buffer_terrain_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_descriptorset2_, 0, uniform_buffer_terrain_.buffer_, 0, uniform_buffer_terrain_.memory_size_);
 
-	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
+	vkUpdateDescriptorSets(vk_device_, (uint32_t)buffer.write_descriptor_sets_.size(), buffer.write_descriptor_sets_.data(), 0, nullptr);
 
 	return true;
 }
@@ -591,22 +587,13 @@ void MeshShaderDemo::UpdateTerrain() {
 
 	uint32_t height_buffer_size = (uint32_t)(sizeof(float) * SQUARE(test_terrain.vertex_count_per_edge_));
 
-	void* data = nullptr;
-	if (VK_SUCCESS != vkMapMemory(vk_device_, shader_storage_buffer_heights_.memory_, 0,
-		shader_storage_buffer_heights_.memory_size_, 0 /*flags*/, &data)) {
-
+	if (!UpdateBuffer(shader_storage_buffer_heights_, test_terrain.heights_, height_buffer_size)) {
 		Terrain_Free(test_terrain);
-
-		printf("vkMapMemory error\n");
 		return;
 	}
 
-	memcpy(data, test_terrain.heights_, height_buffer_size);
-
 	// now we can free terrain memory
 	Terrain_Free(test_terrain);
-
-	vkUnmapMemory(vk_device_, shader_storage_buffer_heights_.memory_);
 }
 
 // build command buffer
@@ -692,13 +679,10 @@ void MeshShaderDemo::BuildCommandBuffer(VkPipeline pipeline) {
 void MeshShaderDemo::UpdateMVPUniformBuffer() {
 	ubo_mat_s ubo_mvp;
 
-	glm::mat4 projection_matrix = glm::perspectiveRH_ZO(glm::radians(70.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 4.0f, 4096.0f);
+	glm::mat4 projection_matrix, view_matrix, model_matrix;
 
-	glm::mat4 view_matrix;
+	GetProjMatrix(projection_matrix);
 	GetViewMatrix(view_matrix);
-
-	glm::mat4 model_matrix;
 	GetModelMatrix(model_matrix);
 
 	ubo_mvp.matrix_ = projection_matrix * view_matrix * model_matrix;

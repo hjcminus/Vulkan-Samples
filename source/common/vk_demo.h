@@ -22,6 +22,7 @@ public:
 	void					Shutdown();
     virtual void			Display();
     virtual void			BuildCommandBuffers() = 0;
+    virtual void            WindowSizeChanged();
     virtual void            Update();
 
     void                    MainLoop();
@@ -35,12 +36,12 @@ public:
 
     bool                    LoadModel(const char * filename, bool move_to_origin, model_s & model, const glm::mat4* transform = nullptr) const;
 
+    // desc_buffer_info_count can be zero
     bool                    CreateBuffer(vk_buffer_s& buffer, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_prop_flags, VkDeviceSize req_size) const;
     void                    DestroyBuffer(vk_buffer_s& buffer) const;
     bool					UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const;
-
-    void *                  MapMemory(const vk_buffer_s& buffer) const;
-    void                    UnmapMemory(const vk_buffer_s& buffer);
+    void *                  MapBuffer(vk_buffer_s& buffer) const;
+    bool                    UnmapBuffer(vk_buffer_s& buffer) const;
 
     bool                    CreateBufferAddInitData(vk_buffer_s& buffer, VkBufferUsageFlags usage_flags, const void* data, size_t data_size, bool staging);
     bool                    CreateVertexBuffer(vk_buffer_s & buffer, const void * data, size_t data_size, bool staging);
@@ -51,9 +52,10 @@ public:
     void                    DestroySampler(VkSampler & sampler);
     
     bool                    Create2DImage(vk_image_s & vk_image, VkFormat format, VkImageTiling tiling, 
-                                VkImageUsageFlags usage, uint32_t width, uint32_t height,
+                                VkImageUsageFlags usage, uint32_t width, uint32_t height, uint32_t array_layers,
                                 VkMemoryPropertyFlags memory_property_flags,
                                 VkImageAspectFlags image_aspect_flags,
+                                VkImageViewType image_view_type,
                                 VkSampler sampler,
                                 VkImageLayout image_layout);
     void                    Destroy2DImage(vk_image_s& vk_image);
@@ -79,6 +81,9 @@ protected:
     
     camera_mode_t           camera_mode_;
     uint32_t                camera_rotation_flags_;
+    float                   z_near_;
+    float                   z_far_;
+    float                   fovy_;  // in degree
 
     // configuration
     uint32_t                cfg_viewport_cx_;
@@ -194,8 +199,12 @@ protected:
     bool                    LoadShader(const char* filename, VkShaderModule& shader_module) const;
     
     void                    SetTitle(const char * text);
+    void                    GetProjMatrix(glm::mat4& proj_mat) const;
     void                    GetViewMatrix(glm::mat4 & view_mat) const;
     void                    GetModelMatrix(glm::mat4& model_mat) const;
+
+    VkFormat                GetIdealDepthFormat() const;
+    VkFormat                GetIdealDepthStencilFormat() const;
 
     // flags
     static const uint32_t   VERTEX_FIELD_COLOR = 1;
@@ -287,9 +296,6 @@ private:
 
     // physical device
     bool                    SelectPhysicalDevice();
-
-    // init supported depth format
-    bool                    InitSupportedDepthFormat();
 
     // logic device
     bool                    CreateDevice();

@@ -13,6 +13,9 @@ using byte_t = uint8_t;
 using word_t = uint16_t;
 using dword_t = uint32_t;
 
+// half float
+using float16_t = uint16_t;
+
 static_assert(sizeof(byte_t) == 1, "Bad size of byte_t");
 static_assert(sizeof(word_t) == 2, "Bad size of word_t");
 static_assert(sizeof(dword_t) == 4, "Bad size of dword_t");
@@ -31,9 +34,12 @@ static_assert(sizeof(dword_t) == 4, "Bad size of dword_t");
 # define KEY_F10			VK_F10
 # define KEY_F11			VK_F11
 # define KEY_F12			VK_F12
+
+# define KEY_PAGEUP			VK_PRIOR
+# define KEY_PAGEDOWN		VK_NEXT
 #endif
 
-#if defined(__linux__)	// TODO
+#if defined(__linux__)	// TODO: https://www.oreilly.com/library/view/xlib-reference-manual/9780937175262/16_appendix-h.html
 # define KEY_F1				XK_F1
 # define KEY_F2				XK_F2
 # define KEY_F3				XK_F3	
@@ -45,7 +51,10 @@ static_assert(sizeof(dword_t) == 4, "Bad size of dword_t");
 # define KEY_F9				XK_F9	
 # define KEY_F10			XK_F10	
 # define KEY_F11			XK_F11	
-# define KEY_F12			XK_F12	
+# define KEY_F12			XK_F12
+
+# define KEY_PAGEUP			XK_Prior
+# define KEY_PAGEDOWN		XK_Next
 #endif
 
 /*
@@ -62,14 +71,23 @@ common
 COMMON_API void				Common_Init();
 
 COMMON_API const char *		GetDataFolder();
+COMMON_API const char *		GetShadersFolder();
 
 // s: struct
 // f: field
 #define GET_FIELD_OFFSET(s, f) (uint32_t)(&(((s*)0)->f))
 
+#define COUNT_OF(a)		(sizeof(a) / sizeof(a[0]))
+
 #define SAFE_FREE(ptr) do { if (ptr) { TEMP_FREE(ptr); ptr = nullptr; } } while (0)
 
+// helper
+#define RET_CASE_ID_TO_STR(ID)    case ID: return #ID
+
 COMMON_API bool				IsBigEndian();
+
+COMMON_API float			HalfFloatToFloat(float16_t h);
+COMMON_API float16_t		FloatToHalfFloat(float f);
 
 /*
 ================================================================================
@@ -104,6 +122,7 @@ string
 ================================================================================
 */
 COMMON_API void				Str_Copy(char* dst, int dst_cap, const char* src);
+COMMON_API void				Str_Cat(char* dst, int dst_cap, const char* src);
 COMMON_API int				Str_ICmp(const char* s1, const char* s2);
 COMMON_API void				Str_VSPrintf(char* dst, int dst_cap, const char* fmt, va_list argptr);
 COMMON_API void				Str_SPrintf(char* dst, int dst_cap, const char* fmt, ...);
@@ -117,6 +136,7 @@ COMMON_API char*			Str_SkipWhiteSpace(char* pc);
 COMMON_API char*			Str_SkipCharactor(char* pc);
 COMMON_API bool				Str_ExtractFileDir(const char* path, char* dir, int dir_cap);
 COMMON_API bool				Str_ExtractFileName(const char* path, char* filename, int filename_cap);
+COMMON_API bool				Str_ReplaceFileNameExt(char * path, int path_cap, const char * new_ext);
 COMMON_API int				Str_Tokenize(const char* s, char** buffers, int each_buffer_size, int buffers_count);
 
 // note: s will be changed
@@ -177,13 +197,21 @@ COMMON_API void				RGBInterpolate(const rgb_s & start, const rgb_s & stop, doubl
 image
 ================================================================================
 */
+
+enum class image_format_t : int32_t {
+	R8G8B8A8,
+	R16G16B16A16_FLOAT
+	// ...
+};
+
 struct image_s {
 	int						width_;
 	int						height_;
-	byte_t*					pixels_;	// rgba
+	image_format_t			format_;
+	byte_t*					pixels_;
 };
 
-COMMON_API bool				Img_Create(int width, int height, image_s& image);
+COMMON_API bool				Img_Create(int width, int height, image_format_t fmt, image_s& image);
 COMMON_API bool				Img_Load(const char * filename, image_s & image);
 COMMON_API bool				Img_Save(const char* filename, const image_s& image);
 COMMON_API void				Img_Free(image_s & image);
@@ -345,6 +373,25 @@ struct model_s {
 
 COMMON_API bool				Model_Load(const char* filename, bool move_to_origin, model_s & model, const glm::mat4 * transform = nullptr);
 COMMON_API void				Model_Free(model_s& model);
+
+/*
+================================================================================
+helper
+================================================================================
+*/
+struct frustum_s {
+	float					z_near_;
+	float					z_far_;
+	float					fovy_;
+	float					ratio_;	// w / h
+	glm::vec3				view_pos_;
+	glm::vec3				view_target_;
+	glm::vec3				view_up_;
+};
+
+COMMON_API void				CalculateFrustumCorners(const frustum_s & frustum, glm::vec3 corners[8]);
+COMMON_API void				CalculateVec3ArrayCenter(const glm::vec3 * arr, int array_sz, glm::vec3 & center);
+COMMON_API float			CalculateMaxDistToVec3Array(const glm::vec3* arr, int array_sz, const glm::vec3 & pos);
 
 /*
 ================================================================================

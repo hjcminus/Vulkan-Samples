@@ -47,8 +47,11 @@ public:
 	INLINE__ void				Scale(const Vec3<REAL> &scale);
 	INLINE__ void				Scale(REAL s);
 	INLINE__ void				Perspective(REAL fovy_degree, REAL aspect, REAL znear, REAL zfar);
+	INLINE__ void				Perspective_ZO(REAL fovy_degree, REAL aspect, REAL znear, REAL zfar);
 	INLINE__ void				Frustum(REAL left, REAL right, REAL bottom, REAL top, REAL znear, REAL zfar);
+	INLINE__ void				Frustum_ZO(REAL left, REAL right, REAL bottom, REAL top, REAL znear, REAL zfar);	// z range [0,1]
 	INLINE__ void				Ortho(REAL left, REAL right, REAL bottom, REAL top, REAL near_, REAL far_);
+	INLINE__ void				Ortho_ZO(REAL left, REAL right, REAL bottom, REAL top, REAL near_, REAL far_);		// z range [0,1]
 	INLINE__ void				LookAt(const Vec3<REAL> &eye, const Vec3<REAL> &center, const Vec3<REAL> &up);
 };
 

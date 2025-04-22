@@ -19,6 +19,10 @@ public:
 	void					BuildCommandBuffers() override;
 	void					Update() override;
 
+protected:
+
+	void					FuncKeyDown(uint32_t key) override;
+
 private:
 
 	vk_buffer_s				uniform_buffer_mvp_;
@@ -33,6 +37,14 @@ private:
 	VkPipelineLayout		vk_pipeline_layout_;
 
 	VkPipeline				vk_pipeline_;
+
+	/*
+	  Vulkan use right-handed clipspace other than left-handed which used in OpenGL.
+	  This make count closewise winding triangle will become closewise after persepective project
+	  so we need to revert y value to keep winding correct.
+	 */
+	bool					revert_y_by_proj_mat_;
+	bool					cull_back_face_;
 
 	// uniform buffer
 	bool					CreateUniformBuffer();

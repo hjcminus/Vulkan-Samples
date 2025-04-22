@@ -17,6 +17,9 @@ VkDemo
 VkDemo::VkDemo():
     camera_mode_(camera_mode_t::CM_MOVE_CAMERA),
     camera_rotation_flags_(ROTATION_YAW_BIT | ROTATION_PITCH_BIT),
+    z_near_(1.0f),
+    z_far_(16.0f),
+    fovy_(70.0f),
     cfg_viewport_cx_(640),
     cfg_viewport_cy_(480),
 
@@ -74,6 +77,7 @@ VkDemo::VkDemo():
 	memset(&vk_physical_device_mesh_shader_propertices_, 0, sizeof(vk_physical_device_mesh_shader_propertices_));
 	memset(&vk_physical_device_features_, 0, sizeof(vk_physical_device_features_));
 
+    memset(&vk_swapchain_images_, 0, sizeof(vk_swapchain_images_));
 	memset(&vk_depth_stencil_, 0, sizeof(vk_depth_stencil_));
 
     // z up
@@ -97,9 +101,31 @@ VkDemo::VkDemo():
     memset(vk_framebuffers_, 0, sizeof(vk_framebuffers_));
     memset(vk_draw_cmd_buffers_, 0, sizeof(vk_draw_cmd_buffers_));
 
+    memset(vk_wait_fences_, 0, sizeof(vk_wait_fences_));
+
 #if defined(_WIN32)
     hInstance_ = GetModuleHandle(NULL);
 #endif
+
+
+    /*
+    
+    // all the layers
+    uint32_t count = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+
+    std::vector<VkExtensionProperties> props;
+    props.resize(count);
+
+    vkEnumerateInstanceExtensionProperties(nullptr, &count, props.data());
+
+    printf("---- extensions begin ----\n");
+    for (auto& it : props) {
+        printf("%s\n", it.extensionName);
+    }
+    printf("---- extensions end ----\n");
+
+    */
 }
 
 VkDemo::~VkDemo() {
@@ -113,8 +139,8 @@ bool VkDemo::Init(const char* project_shader_dir,
     uint32_t max_desp_set) 
 {
     // setup folders
-    Str_SPrintf(shaders_dir_, MAX_PATH, "%s/shaders/%s",
-        GetDataFolder(), project_shader_dir);
+    Str_SPrintf(shaders_dir_, MAX_PATH, "%s/%s",
+        GetShadersFolder(), project_shader_dir);
     
     Str_SPrintf(textures_dir_, MAX_PATH, "%s/textures",
         GetDataFolder());
@@ -134,7 +160,8 @@ bool VkDemo::Init(const char* project_shader_dir,
         return false;
     }
 
-    if (!InitSupportedDepthFormat()) {
+    vk_depth_format_ = GetIdealDepthStencilFormat();
+    if (vk_depth_format_ == VK_FORMAT_UNDEFINED) {
         return false;
     }
 
@@ -273,6 +300,10 @@ void VkDemo::Display() {
     }
 }
 
+void VkDemo::WindowSizeChanged() {
+    // override by child class
+}
+
 void VkDemo::Update() {
     // override by child class
 }
@@ -280,7 +311,9 @@ void VkDemo::Update() {
 void VkDemo::MainLoop() {
 #if defined(_WIN32)
 
-    Display();  // first draw
+    if (enable_display_) {
+        Display();
+    }
 
     MSG msg = {};
     while (GetMessage(&msg, NULL, 0, 0)) {
@@ -366,15 +399,12 @@ bool VkDemo::CreateBuffer(vk_buffer_s& buffer,
         return false;
     }
 
-    buffer.memory_size_ = mem_req.size;
+    buffer.memory_prop_flags_ = mem_prop_flags;
+    buffer.memory_size_ = aligned_req_size; // not mem_req.size;
 
     if (VK_SUCCESS != vkBindBufferMemory(vk_device_, buffer.buffer_, buffer.memory_, 0)) {
         return false;
     }
-
-    buffer.desc_buffer_info_.buffer = buffer.buffer_;
-    buffer.desc_buffer_info_.offset = 0;
-    buffer.desc_buffer_info_.range = aligned_req_size;
 
     return true;
 }
@@ -394,48 +424,56 @@ void VkDemo::DestroyBuffer(vk_buffer_s& buffer) const {
 }
 
 bool VkDemo::UpdateBuffer(vk_buffer_s& buffer, const void* host_data, size_t host_data_size) const {
-    void* data = nullptr;
-    VkResult rt = vkMapMemory(vk_device_, buffer.memory_, buffer.desc_buffer_info_.offset, buffer.desc_buffer_info_.range, 0, &data);
-    if (rt != VK_SUCCESS) {
-        printf("[UpdateBuffer] vkMapMemory error\n");
+    void* data = MapBuffer(buffer);
+    if (!data) {
         return false;
     }
 
     memcpy(data, host_data, host_data_size);
 
-    // flush to make change visible to device
-    VkMappedMemoryRange mapped_range = {};
-
-    mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    mapped_range.pNext = nullptr;
-    mapped_range.memory = buffer.memory_;
-    mapped_range.offset = buffer.desc_buffer_info_.offset;
-    mapped_range.size = buffer.desc_buffer_info_.range;
-
-    bool ok = true;
-
-    rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
-    if (rt != VK_SUCCESS) {
-        ok = false;
-        printf("[UpdateBuffer] vkFlushMappedMemoryRanges error\n");
-    }
-
-    vkUnmapMemory(vk_device_, buffer.memory_);
-
-    return ok;
+    return UnmapBuffer(buffer);
 }
 
-void* VkDemo::MapMemory(const vk_buffer_s& buffer) const {
+void* VkDemo::MapBuffer(vk_buffer_s& buffer) const {
+    // entire range: TO FIX
+    VkDeviceSize offset = 0;
+    VkDeviceSize range = buffer.memory_size_;
+
     void* data = nullptr;
-    if (VK_SUCCESS != vkMapMemory(vk_device_, buffer.memory_, 0, buffer.memory_size_, 0, &data)) {
+    VkResult rt = vkMapMemory(vk_device_, buffer.memory_, offset, range, 0, &data);
+    if (rt != VK_SUCCESS) {
+        printf("[MapBuffer] vkMapMemory error\n");
         return nullptr;
     }
 
     return data;
 }
 
-void VkDemo::UnmapMemory(const vk_buffer_s& buffer) {
+bool VkDemo::UnmapBuffer(vk_buffer_s& buffer) const {
+    bool ok = true;
+
+    if ((buffer.memory_prop_flags_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        // not use host cache management commands
+
+        // flush to make change visible to device
+        VkMappedMemoryRange mapped_range = {};
+
+        mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        mapped_range.pNext = nullptr;
+        mapped_range.memory = buffer.memory_;
+        mapped_range.offset = 0;
+        mapped_range.size = buffer.memory_size_;
+
+        VkResult rt = vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range);
+        if (rt != VK_SUCCESS) {
+            ok = false;
+            printf("[UpdateBuffer] vkFlushMappedMemoryRanges error\n");
+        }
+    }
+
     vkUnmapMemory(vk_device_, buffer.memory_);
+
+    return ok;
 }
 
 // Staging buffer
@@ -458,14 +496,9 @@ bool VkDemo::CreateBufferAddInitData(vk_buffer_s& buffer, VkBufferUsageFlags usa
         return false;
     }
 
-    void* dst = MapMemory(temp_buffer);
-    if (!dst) {
+    if (!UpdateBuffer(temp_buffer, data, data_size)) {
         return false;
     }
-
-    memcpy(dst, data, data_size);
-
-    UnmapMemory(temp_buffer);
 
     if (!staging) {
         buffer = temp_buffer;
@@ -591,10 +624,11 @@ void VkDemo::DestroySampler(VkSampler& sampler) {
 }
 
 bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling tiling,
-    VkImageUsageFlags usage, uint32_t width, uint32_t height,
+    VkImageUsageFlags usage, uint32_t width, uint32_t height, uint32_t array_layers,
     VkMemoryPropertyFlags memory_property_flags,
     VkImageAspectFlags image_aspect_flags,
-    VkSampler sampler,
+    VkImageViewType image_view_type,
+    VkSampler sampler,   
     VkImageLayout image_layout)
 {
     VkImageCreateInfo image_create_info = {
@@ -605,7 +639,7 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
         .format = format,
         .extent = { width, height, 1},
         .mipLevels = 1,
-        .arrayLayers = 1,
+        .arrayLayers = array_layers,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = tiling,
         .usage = usage,
@@ -635,6 +669,8 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
         return false;
     }
 
+    vk_image.memory_prop_flags_ = memory_property_flags;
+
     if (VK_SUCCESS != vkBindImageMemory(vk_device_, vk_image.image_, vk_image.memory_, 0 /* memoryOffset */)) {
         return false;
     }
@@ -648,14 +684,14 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
     image_view_create_info.pNext = nullptr;
     image_view_create_info.flags = 0;
     image_view_create_info.image = vk_image.image_;
-    image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    image_view_create_info.viewType = image_view_type;
     image_view_create_info.format = format;
     // components
     image_view_create_info.subresourceRange.aspectMask = image_aspect_flags;
     image_view_create_info.subresourceRange.baseMipLevel = 0;
     image_view_create_info.subresourceRange.levelCount = 1;
     image_view_create_info.subresourceRange.baseArrayLayer = 0;
-    image_view_create_info.subresourceRange.layerCount = 1;
+    image_view_create_info.subresourceRange.layerCount = array_layers;
 
     if (VK_SUCCESS != vkCreateImageView(vk_device_, &image_view_create_info,
         nullptr, &vk_image.image_view_)) {
@@ -721,9 +757,9 @@ bool VkDemo::Load2DTexture(const char* filename,
     // VK_IMAGE_TILING_LINEAR: specifies linear tiling (texels are laid out in memory in row-major order, 
     //                         possibly with some padding on each row).
     if (!Create2DImage(vk_image, format, VK_IMAGE_TILING_LINEAR, image_usage,
-        (uint32_t)pic.width_, (uint32_t)pic.height_,
+        (uint32_t)pic.width_, (uint32_t)pic.height_, 1,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT, sampler, image_layout))
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, sampler, image_layout))
     {
         Img_Free(pic);
         return false;
@@ -745,6 +781,11 @@ bool VkDemo::Update2DTexture(const image_s& pic, vk_image_s& vk_image) {
         return false;
     }
 
+    if (pic.format_ != image_format_t::R8G8B8A8) {
+        printf("Not a RGBA pic\n");
+        return false;
+    }
+
     // copy contents
     void* mapped = nullptr;
     if (VK_SUCCESS != vkMapMemory(vk_device_, vk_image.memory_, 0, vk_image.memory_size_, 0 /* flags */, &mapped)) {
@@ -752,6 +793,25 @@ bool VkDemo::Update2DTexture(const image_s& pic, vk_image_s& vk_image) {
     }
 
     memcpy(mapped, pic.pixels_, pic.width_ * pic.height_ * 4);
+
+    if ((vk_image.memory_prop_flags_ & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        // not use host cache management commands
+
+        // flush to make change visible to device
+        VkMappedMemoryRange mapped_range = {};
+
+        mapped_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        mapped_range.pNext = nullptr;
+        mapped_range.memory = vk_image.memory_;
+        mapped_range.offset = 0;
+        mapped_range.size = vk_image.memory_size_;
+
+        if (VK_SUCCESS != vkFlushMappedMemoryRanges(vk_device_, 1, &mapped_range)) {
+            vkUnmapMemory(vk_device_, vk_image.memory_);
+            printf("[UpdateBuffer] vkFlushMappedMemoryRanges error\n");
+            return false;
+        }
+    }
 
     vkUnmapMemory(vk_device_, vk_image.memory_);
 
@@ -942,6 +1002,11 @@ void VkDemo::SetTitle(const char* text) {
 #endif
 }
 
+void VkDemo::GetProjMatrix(glm::mat4& proj_mat) const {
+    proj_mat = glm::perspectiveRH_ZO(glm::radians(fovy_),
+        (float)cfg_viewport_cx_ / cfg_viewport_cy_, z_near_, z_far_);
+}
+
 void VkDemo::GetViewMatrix(glm::mat4& view_mat) const {
     view_mat = glm::lookAt(camera_.pos_, camera_.target_, camera_.up_);
 }
@@ -955,6 +1020,45 @@ void VkDemo::GetModelMatrix(glm::mat4& model_mat) const {
     else {
         model_mat = (*model_rotate_mat_) * scale_mat;
     }
+}
+
+VkFormat VkDemo::GetIdealDepthFormat() const {
+    // from hightest precision to lowest
+    std::array<VkFormat, 5> formats = {
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_FORMAT_D32_SFLOAT,
+        VK_FORMAT_D24_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM_S8_UINT,
+        VK_FORMAT_D16_UNORM
+    };
+
+    for (auto & format : formats) {
+        VkFormatProperties format_props;
+        vkGetPhysicalDeviceFormatProperties(vk_physical_device_, format, &format_props);
+        if (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            return format;
+        }
+    }
+
+    return VK_FORMAT_UNDEFINED;
+}
+
+VkFormat VkDemo::GetIdealDepthStencilFormat() const {
+    std::array<VkFormat, 3> formats = {
+    VK_FORMAT_D32_SFLOAT_S8_UINT,
+    VK_FORMAT_D24_UNORM_S8_UINT,
+    VK_FORMAT_D16_UNORM_S8_UINT
+    };
+
+    for (auto& format : formats) {
+        VkFormatProperties format_props;
+        vkGetPhysicalDeviceFormatProperties(vk_physical_device_, format, &format_props);
+        if (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+            return format;
+        }
+    }
+
+    return VK_FORMAT_UNDEFINED;
 }
 
 bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& params,
@@ -1286,6 +1390,8 @@ bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& pa
         .lineWidth = 1.0f
     };
 
+    // glPolygonOffset(OffsetFactor, OffsetUnit); 
+
     create_info.pRasterizationState = &rasterization_state;
 
     // -- pMultisampleState --
@@ -1602,6 +1708,8 @@ LRESULT VkDemo::DemoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case VK_F10:
         case VK_F11:
         case VK_F12:
+        case VK_PRIOR:
+        case VK_NEXT:
             FuncKeyDown(wParam);
             InvalidateRect(hWnd, nullptr, FALSE);
             break;
@@ -1792,6 +1900,20 @@ bool VkDemo::SelectPhysicalDevice() {
     VkPhysicalDevice hPhysicalDevice = NULL;
 
     for (auto& physical_device : physical_devices) {
+
+        /*
+        uint32_t ext_pro_count = 0;
+        vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &ext_pro_count, nullptr);
+
+        std::vector<VkExtensionProperties> ext_pros(ext_pro_count);
+        vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &ext_pro_count, ext_pros.data());
+
+        printf("-- device extentions --\n");
+        for (auto& pro : ext_pros) {
+            printf("%s\n", pro.extensionName);
+        }
+        */
+
         uint32_t queue_family_property_count = 0;
         /* void */ vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_property_count, nullptr);
 
@@ -1848,29 +1970,6 @@ bool VkDemo::SelectPhysicalDevice() {
     }
 
     return false; // no physical device support graphics queue
-}
-
-// init supported depth format
-bool VkDemo::InitSupportedDepthFormat() {
-    // front highest precision to lowest
-    std::array<VkFormat, 5> depth_formats = {
-        VK_FORMAT_D32_SFLOAT_S8_UINT,
-        VK_FORMAT_D32_SFLOAT,
-        VK_FORMAT_D24_UNORM_S8_UINT,
-        VK_FORMAT_D16_UNORM_S8_UINT,
-        VK_FORMAT_D16_UNORM
-    };
-
-    for (auto& format : depth_formats) {
-        VkFormatProperties format_propts = {};
-        vkGetPhysicalDeviceFormatProperties(vk_physical_device_, format, &format_propts);
-        if (format_propts.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
-            vk_depth_format_ = format;
-            return true;
-        }
-    }
-
-    return false;
 }
 
 // logic device
@@ -2038,6 +2137,15 @@ bool VkDemo::CreateSwapChain(bool vsync) {
         return false;
     }
 
+    printf("Surfacecapabilities.minImageCount = %u\n", surf_caps.minImageCount);
+    printf("Surfacecapabilities.maxImageCount = %u\n", surf_caps.maxImageCount);
+    printf("Surfacecapabilities.currentExtent = (%u,%u)\n",
+        surf_caps.currentExtent.width, surf_caps.currentExtent.height);
+    printf("Surfacecapabilities.minImageExtent = (%u,%u)\n", 
+        surf_caps.minImageExtent.width, surf_caps.minImageExtent.height);
+    printf("Surfacecapabilities.maxImageExtent = (%u,%u)\n",
+        surf_caps.maxImageExtent.width, surf_caps.maxImageExtent.height);
+
     // image count
     uint32_t desired_swapchain_image_count = surf_caps.minImageCount + 1;
     if (surf_caps.maxImageCount && desired_swapchain_image_count > surf_caps.maxImageCount) {
@@ -2090,20 +2198,20 @@ bool VkDemo::CreateSwapChain(bool vsync) {
     }
 
     // -- image_extent --
-    VkExtent2D image_extent = {};
+    VkExtent2D swapchain_image_extent = {};
 
     if (surf_caps.currentExtent.width == (uint32_t)-1) {
         // special value (0xFFFFFFFF, 0xFFFFFFFF) indicating that the surface size
         // will be determined by the extent of a swapchain targeting the surface.
 
-        image_extent.width = cfg_viewport_cx_;
-        image_extent.height = cfg_viewport_cy_;
+        swapchain_image_extent.width = cfg_viewport_cx_;
+        swapchain_image_extent.height = cfg_viewport_cy_;
     }
     else {
-        image_extent = surf_caps.currentExtent;
+        swapchain_image_extent = surf_caps.currentExtent;
 
-        cfg_viewport_cx_ = image_extent.width;
-        cfg_viewport_cy_ = image_extent.height;
+        cfg_viewport_cx_ = swapchain_image_extent.width;
+        cfg_viewport_cy_ = swapchain_image_extent.height;
     }
 
     // -- image_usage --
@@ -2115,6 +2223,15 @@ bool VkDemo::CreateSwapChain(bool vsync) {
     if (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) {
         image_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
+
+    if (surf_caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) {
+        // image clear operation
+        image_usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    }
+
+    //if (surf_caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+
+    //}
 
     // -- pre_transform --
 
@@ -2183,6 +2300,8 @@ bool VkDemo::CreateSwapChain(bool vsync) {
         }
     }
 
+    printf("Selected present_mode = %s\n", Vk_PresentModelToStr(present_mode));
+
     // fill create info
 
     VkSwapchainCreateInfoKHR create_info = {};
@@ -2194,7 +2313,7 @@ bool VkDemo::CreateSwapChain(bool vsync) {
     create_info.minImageCount = desired_swapchain_image_count;
     create_info.imageFormat = image_format;
     create_info.imageColorSpace = image_color_space;
-    create_info.imageExtent = image_extent;
+    create_info.imageExtent = swapchain_image_extent;
 
     // imageArrayLayers: is the number of views in a multiview/stereo surface.
     //                   For non-stereoscopic 3D applications this value is 1
@@ -2717,6 +2836,11 @@ void VkDemo::CheckMovement() {
 }
 
 void VkDemo::OnResize() {
+    if (!enable_display_) {
+        // not inited
+        return;
+    }
+
     enable_display_ = false;
 
     if (!vk_instance_) {
@@ -2743,6 +2867,9 @@ void VkDemo::OnResize() {
     if (!CreateFramebuffers()) {
         return;
     }
+
+    // notify child class that window resized
+    WindowSizeChanged();
 
     // rebuld command buffer
     BuildCommandBuffers();

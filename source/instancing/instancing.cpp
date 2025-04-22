@@ -22,6 +22,9 @@ InstancingDemo::InstancingDemo():
 	cfg_demo_win_class_name_ = TEXT("Instance");
 #endif
 
+	z_near_ = 1.0f;
+	z_far_ = 1024.0f;
+
 	memset(&ubo_mvp_, 0, sizeof(ubo_mvp_));
 	memset(&ubo_viewer_, 0, sizeof(ubo_viewer_));
 	memset(&ubo_light_, 0, sizeof(ubo_light_));
@@ -311,14 +314,14 @@ bool InstancingDemo::AllocDescriptorSets() {
 		return false;
 	}
 
-	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
+	update_desc_sets_buffer_s buffer;
 
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_, 0, ubo_mvp_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_, 1, ubo_viewer_);
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_desc_set_, 2, ubo_light_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_, 0, ubo_mvp_.buffer_, 0, ubo_mvp_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_, 1, ubo_viewer_.buffer_, 0, ubo_viewer_.memory_size_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_desc_set_, 2, ubo_light_.buffer_, 0, ubo_light_.memory_size_);
 
 	vkUpdateDescriptorSets(vk_device_, 
-		(uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
+		(uint32_t)buffer.write_descriptor_sets_.size(), buffer.write_descriptor_sets_.data(), 0, nullptr);
 
 	return true;
 }
@@ -357,7 +360,7 @@ bool InstancingDemo::CreatePipeline() {
 		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 		.primitive_restart_enable_ = VK_FALSE,
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
-		.cull_mode_ = VK_CULL_MODE_NONE,
+		.cull_mode_ = VK_CULL_MODE_BACK_BIT,
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 		.depth_test_enable_ = VK_TRUE,
 		.depth_write_enable_ = VK_TRUE,
@@ -371,9 +374,7 @@ bool InstancingDemo::CreatePipeline() {
 void InstancingDemo::UpdateMVPUniformBuffer() {
 	ubo_mvp_sep_s ubo_mvp_sep = {};
 
-	ubo_mvp_sep.proj_ = glm::perspectiveRH_ZO(glm::radians(45.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 1.0f, 1024.0f);
-
+	GetProjMatrix(ubo_mvp_sep.proj_);
 	GetViewMatrix(ubo_mvp_sep.view_);
 	GetModelMatrix(ubo_mvp_sep.model_);
 

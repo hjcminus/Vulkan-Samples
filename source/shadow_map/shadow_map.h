@@ -29,9 +29,6 @@ private:
 	static const uint32_t	FRAMEBUFFER_DIM = 1024;
 	static const vertex_format_t	MODEL_EXPECT_VF = vertex_format_t::VF_POS_NORMAL_UV;
 
-	static constexpr float	Z_NEAR = 2.0f;
-	static constexpr float	Z_FAR = 32.0f;
-
 	uint32_t				old_view_cx_;
 	uint32_t				old_view_cy_;
 
@@ -41,7 +38,7 @@ private:
 	VkModel					model_object_;
 
 	VkSampler				vk_sampler_depth_;
-	VkFormat				vk_depth_format_;
+	VkFormat				vk_shadow_map_depth_format_;
 
 	VkRenderPass			vk_render_pass_depth_;
 

@@ -15,11 +15,19 @@ TriangleDemo::TriangleDemo():
 	vk_descriptorset_layout_(VK_NULL_HANDLE),
 	vk_descriptorset_(VK_NULL_HANDLE),
 	vk_pipeline_layout_(VK_NULL_HANDLE),
-	vk_pipeline_(VK_NULL_HANDLE)
+	vk_pipeline_(VK_NULL_HANDLE),
+	revert_y_by_proj_mat_(false),
+	cull_back_face_(true)
 {
 #if defined(_WIN32)
 	cfg_demo_win_class_name_ = TEXT("Triangle");
 #endif
+
+	z_near_ = 1.0f;
+	z_far_ = 3.0f;
+	fovy_ = 45.0f;
+
+	cfg_viewport_cy_ = cfg_viewport_cx_ = 480;
 
 	memset(&uniform_buffer_mvp_, 0, sizeof(uniform_buffer_mvp_));
 	memset(&vertex_buffer_, 0, sizeof(vertex_buffer_));
@@ -34,6 +42,24 @@ bool TriangleDemo::Init() {
 		1, 0, 0, 1)) {
 		return false;
 	}
+
+	// init camera
+	camera_mode_ = camera_mode_t::CM_ROTATE_OBJECT;
+	camera_rotation_flags_ = ROTATION_YAW_BIT;
+
+	/*
+		  y
+	 z   /
+	 |  /
+	 | /
+	 |/______x
+
+	 */
+
+	// z axis is up
+	camera_.pos_ = glm::vec3(0.0f, -2.0f, 0.0f);
+	camera_.target_ = glm::vec3(0.0f);
+	camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
 
 	if (!CreateUniformBuffer()) {
 		return false;
@@ -61,27 +87,12 @@ bool TriangleDemo::Init() {
 
 	BuildCommandBuffers();
 
-	// init camera
-	camera_mode_ = camera_mode_t::CM_ROTATE_OBJECT;
-	camera_rotation_flags_ = ROTATION_YAW_BIT;
-
-	/*
-	      y
-	 z   /
-	 |  /
-	 | /
-	 |/______x
-
-	 */
-
-	// z axis is up
-	camera_.pos_ = glm::vec3(0.0f, -2.0f, 0.0f);
-	camera_.target_ = glm::vec3(0.0f);
-	camera_.up_ = glm::vec3(0.0f, 0.0f, 1.0f);
-
 	move_speed_ = 0.1f;
 
 	enable_display_ = true;
+
+	printf("F2: toggle revert y by projection matrix / by viewport\n");
+	printf("F3: toggle cull back face\n");
 
 	return true;
 }
@@ -98,55 +109,58 @@ void TriangleDemo::Shutdown() {
 }
 
 void TriangleDemo::BuildCommandBuffers() {
-	VkCommandBufferBeginInfo cmd_buf_begin_info = {};
-
-	cmd_buf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	cmd_buf_begin_info.pNext = nullptr;
-	cmd_buf_begin_info.flags = 0;
-	cmd_buf_begin_info.pInheritanceInfo = nullptr;
-
-	VkRenderPassBeginInfo render_pass_begin_info = {};
-
-	VkClearValue clear_values[2];
-
-	clear_values[0].color.float32[0] = 0.0f;
-	clear_values[0].color.float32[1] = 0.0f;
-	clear_values[0].color.float32[2] = 0.0f;
-	clear_values[0].color.float32[3] = 1.0f;
-	clear_values[1].depthStencil.depth = 1.0f;
-	clear_values[1].depthStencil.stencil = 0;
-
-	render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-	render_pass_begin_info.pNext = nullptr;
-
-	render_pass_begin_info.renderPass = vk_render_pass_;
-	// render_pass_begin_info.framebuffer
-	render_pass_begin_info.renderArea.offset.x = 0;
-	render_pass_begin_info.renderArea.offset.y = 0;
-	render_pass_begin_info.renderArea.extent.width = cfg_viewport_cx_;
-	render_pass_begin_info.renderArea.extent.height = cfg_viewport_cy_;
-
-	render_pass_begin_info.clearValueCount = 2; // color, depth-stencil
-	render_pass_begin_info.pClearValues = clear_values;
-
 	uint32_t sz_draw_cmd_buffer = (uint32_t)vk_draw_cmd_buffer_count_;
 	for (uint32_t i = 0; i < sz_draw_cmd_buffer; ++i) {
 		VkCommandBuffer cmd_buf = vk_draw_cmd_buffers_[i];
 
+		VkCommandBufferBeginInfo cmd_buf_begin_info = {};
+
+		cmd_buf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		cmd_buf_begin_info.pNext = nullptr;
+		cmd_buf_begin_info.flags = 0;
+		cmd_buf_begin_info.pInheritanceInfo = nullptr;
+
 		vkBeginCommandBuffer(cmd_buf, &cmd_buf_begin_info);
 
+		VkRenderPassBeginInfo render_pass_begin_info = {};
+
+		VkClearValue clear_values[2];
+
+		clear_values[0].color.float32[0] = 0.0f;
+		clear_values[0].color.float32[1] = 0.0f;
+		clear_values[0].color.float32[2] = 0.0f;
+		clear_values[0].color.float32[3] = 1.0f;
+		clear_values[1].depthStencil.depth = 1.0f;
+		clear_values[1].depthStencil.stencil = 0;
+
+		render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		render_pass_begin_info.pNext = nullptr;
+
+		render_pass_begin_info.renderPass = vk_render_pass_;
 		render_pass_begin_info.framebuffer = vk_framebuffers_[i];
+		render_pass_begin_info.renderArea.offset.x = 0;
+		render_pass_begin_info.renderArea.offset.y = 0;
+		render_pass_begin_info.renderArea.extent.width = cfg_viewport_cx_;
+		render_pass_begin_info.renderArea.extent.height = cfg_viewport_cy_;
+
+		render_pass_begin_info.clearValueCount = 2; // color, depth-stencil
+		render_pass_begin_info.pClearValues = clear_values;
 
 		vkCmdBeginRenderPass(cmd_buf, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
 		VkViewport viewport = {
 			.x = 0.0f,
-			.y = (float)cfg_viewport_cy_,
+			.y = 0.0f,
 			.width = (float)cfg_viewport_cx_,
-			.height = -(float)cfg_viewport_cy_,
+			.height = (float)cfg_viewport_cy_,
 			.minDepth = 0.0f,
 			.maxDepth = 1.0f
 		};
+
+		if (!revert_y_by_proj_mat_) {
+			viewport.y = (float)cfg_viewport_cy_,
+			viewport.height = -(float)cfg_viewport_cy_;
+		}
 
 		vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
 
@@ -197,6 +211,20 @@ void TriangleDemo::Update() {
 	UpdateUniformBuffer();
 }
 
+void TriangleDemo::FuncKeyDown(uint32_t key) {
+	if (key == KEY_F2) {
+		revert_y_by_proj_mat_ = !revert_y_by_proj_mat_;
+		SetTitle(revert_y_by_proj_mat_ ? "Triangle - Revert Y by projection matrix" :
+			"Triangle - Revert Y by negative viewport");
+		BuildCommandBuffers();
+	}
+	else if (key == KEY_F3) {
+		cull_back_face_ = !cull_back_face_;
+		CreatePipeline();
+		BuildCommandBuffers();
+	}
+}
+
 // uniform buffer
 bool TriangleDemo::CreateUniformBuffer() {
 	return CreateBuffer(uniform_buffer_mvp_, 
@@ -213,9 +241,11 @@ void TriangleDemo::DestroyUniformBuffer() {
 
 bool TriangleDemo::CreateTriangle() {
 	std::vector<vertex_pos_color_s> vertex_buffer = {
+		// triangle 1
 		{ { -1.0f, 0.0f, -1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
 		{ {  1.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
 		{ {  0.0f, 0.0f,  1.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } },
+		// triangle 2
 		{ {  0.0f,-1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f, 1.0f } },
 		{ {  0.0f, 1.0f, -1.0f }, { 0.0f, 1.0f, 1.0f, 1.0f } },
 		{ {  0.0f, 0.0f,  1.0f }, { 1.0f, 0.0f, 1.0f, 1.0f } }
@@ -268,12 +298,14 @@ bool TriangleDemo::AllocDescriptorSets() {
 
 	vk_descriptorset_ = sets[0];
 
-	std::vector<VkWriteDescriptorSet> write_descriptor_sets;
+	update_desc_sets_buffer_s buffer;
 
-	Vk_PushWriteDescriptorSet_UBO(write_descriptor_sets, vk_descriptorset_,
-		0, uniform_buffer_mvp_);
+	Vk_PushWriteDescriptorSet_UBO(buffer, vk_descriptorset_,
+		0, uniform_buffer_mvp_.buffer_, 0, uniform_buffer_mvp_.memory_size_);
 
-	vkUpdateDescriptorSets(vk_device_, (uint32_t)write_descriptor_sets.size(), write_descriptor_sets.data(), 0, nullptr);
+	vkUpdateDescriptorSets(vk_device_, 
+		(uint32_t)buffer.write_descriptor_sets_.size(), 
+		buffer.write_descriptor_sets_.data(), 0, nullptr);
 
 	return true;
 }
@@ -310,6 +342,8 @@ bool TriangleDemo::CreatePipelineLayout() {
 }
 
 bool TriangleDemo::CreatePipeline() {
+	DestroyPipeline(vk_pipeline_);
+
 	create_pipeline_vert_frag_params_s params = {
 		.vertex_shader_filename_ = "SPIR-V/color.vert.spv",
 		.framgment_shader_filename_ = "SPIR-V/color.frag.spv",
@@ -319,7 +353,7 @@ bool TriangleDemo::CreatePipeline() {
 		.primitive_topology_ = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 		.primitive_restart_enable_ = VK_FALSE,
 		.polygon_mode_ = VK_POLYGON_MODE_FILL,
-		.cull_mode_ = VK_CULL_MODE_NONE,	// VK_CULL_MODE_NONE, VK_CULL_MODE_BACK_BIT
+		.cull_mode_ = (VkCullModeFlags)(cull_back_face_ ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE),
 		.front_face_ = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 		.depth_test_enable_ = VK_TRUE,
 		.depth_write_enable_ = VK_TRUE,
@@ -333,16 +367,15 @@ bool TriangleDemo::CreatePipeline() {
 void TriangleDemo::UpdateUniformBuffer() {
 	ubo_mat_s ubo_mvp = {};
 
-	glm::mat4 proj_mat = glm::perspectiveRH_ZO(glm::radians(45.0f),
-		(float)cfg_viewport_cx_ / cfg_viewport_cy_, 1.0f, 4.0f);
+	glm::mat4 proj_mat, view_mat, model_mat;
 
-	// revert y // revert y by set VkViewport
-	// proj_mat[1][1] *= -1.0f;
-
-	glm::mat4 view_mat, model_mat;
+	GetProjMatrix(proj_mat);
 	GetViewMatrix(view_mat);
-
 	GetModelMatrix(model_mat);
+
+	if (revert_y_by_proj_mat_) {
+		proj_mat[1][1] *= -1.0f;	// revert y
+	}
 
 	ubo_mvp.matrix_ = proj_mat * view_mat * model_mat;
 

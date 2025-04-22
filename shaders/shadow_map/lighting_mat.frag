@@ -59,7 +59,7 @@ void main() {
 	// shadow
 
 	vec2 uv = (in_pos_light_space.xy / in_pos_light_space.w + vec2(1.0, 1.0)) * 0.5;
-	vec2 depth_tex_coord = vec2(uv.x, uv.y);
+	vec2 depth_tex_coord = uv;
 	
 	float pixel_depth = in_pos_light_space.z / in_pos_light_space.w;	// vulkan [0-1]
 	
