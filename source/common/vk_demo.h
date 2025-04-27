@@ -51,20 +51,23 @@ public:
                                 VkSamplerAddressMode address_mode, VkSampler& sampler);
     void                    DestroySampler(VkSampler & sampler);
     
-    bool                    Create2DImage(vk_image_s & vk_image, VkFormat format, VkImageTiling tiling, 
+    bool                    Create2DImage(vk_image_s & vk_image, VkImageCreateFlags flags, VkFormat format, VkImageTiling tiling,
                                 VkImageUsageFlags usage, uint32_t width, uint32_t height, uint32_t array_layers,
                                 VkMemoryPropertyFlags memory_property_flags,
                                 VkImageAspectFlags image_aspect_flags,
                                 VkImageViewType image_view_type,
                                 VkSampler sampler,
                                 VkImageLayout image_layout);
-    void                    Destroy2DImage(vk_image_s& vk_image);
+    void                    DestroyImage(vk_image_s& vk_image);
 
     bool					Load2DTexture(const char* filename, 
                                 VkFormat format, VkImageUsageFlags image_usage, 
                                 VkSampler sampler, VkImageLayout image_layout, vk_image_s & vk_image);
     bool                    Update2DTexture(const image_s & pic, vk_image_s& vk_image);
 
+    bool                    LoadCubeMaps(const char* filename,
+                                VkFormat format, VkImageUsageFlags image_usage,
+                                VkSampler sampler, VkImageLayout image_layout, vk_image_s& vk_image);
 
     void                    DestroyFramebuffer(VkFramebuffer & vk_framebuffer);
     void                    DestroyRenderPass(VkRenderPass & vk_render_pass);

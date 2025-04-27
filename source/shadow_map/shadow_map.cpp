@@ -189,7 +189,7 @@ void ShadowMapDemo::Shutdown() {
 	DestroyDescriptorSetLayout(vk_desc_set_layout_ubo_tex_);
 	DestroyDescriptorSetLayout(vk_desc_set_layout_ubo4_tex_);
 	DestroyFramebuffer(vk_framebuffer_depth_);
-	Destroy2DImage(vk_image_depth_);
+	DestroyImage(vk_image_depth_);
 	DestroyRenderPass(vk_render_pass_depth_);
 	DestroySampler(vk_sampler_depth_);
 
@@ -605,7 +605,7 @@ bool ShadowMapDemo::CreateRenderPass_Depth() {
 }
 
 bool ShadowMapDemo::CreateDepthImage() {
-	return Create2DImage(vk_image_depth_, vk_shadow_map_depth_format_, VK_IMAGE_TILING_OPTIMAL,
+	return Create2DImage(vk_image_depth_, 0, vk_shadow_map_depth_format_, VK_IMAGE_TILING_OPTIMAL,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		FRAMEBUFFER_DIM, FRAMEBUFFER_DIM, 1, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 		VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D, vk_sampler_depth_, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);

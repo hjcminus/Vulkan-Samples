@@ -11,6 +11,53 @@
 
 /*
 ================================================================================
+helper
+================================================================================
+*/
+// image_memory_barrier: in/out
+static void SetAccessMaskOfImageMemoryBarrier(VkImageMemoryBarrier & image_memory_barrier) {
+    image_memory_barrier.srcAccessMask = 0;
+    image_memory_barrier.dstAccessMask = 0;
+    
+    switch (image_memory_barrier.oldLayout) {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+        image_memory_barrier.srcAccessMask = 0;
+        break;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        image_memory_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        break;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        image_memory_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        break;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        image_memory_barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        break;
+    default:
+        printf("Not processed old image layout %d\n", (int)image_memory_barrier.oldLayout);
+        break;
+    }
+    
+    switch (image_memory_barrier.newLayout) {
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        image_memory_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        break;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        image_memory_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        break;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        if (image_memory_barrier.srcAccessMask == 0) {
+            image_memory_barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        }
+        image_memory_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        break;
+    default:
+        printf("Not processed new image layout %d\n", (int)image_memory_barrier.newLayout);
+        break;
+    }
+}
+
+/*
+================================================================================
 VkDemo
 ================================================================================
 */
@@ -623,7 +670,7 @@ void VkDemo::DestroySampler(VkSampler& sampler) {
     }
 }
 
-bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling tiling,
+bool VkDemo::Create2DImage(vk_image_s& vk_image, VkImageCreateFlags flags, VkFormat format, VkImageTiling tiling,
     VkImageUsageFlags usage, uint32_t width, uint32_t height, uint32_t array_layers,
     VkMemoryPropertyFlags memory_property_flags,
     VkImageAspectFlags image_aspect_flags,
@@ -634,7 +681,7 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
     VkImageCreateInfo image_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext = nullptr,
-        .flags = 0,
+        .flags = flags,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = format,
         .extent = { width, height, 1},
@@ -698,6 +745,9 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
         return false;
     }
 
+    vk_image.width_ = width;
+    vk_image.height_ = height;
+
     vk_image.desc_image_info_.sampler = sampler;
     vk_image.desc_image_info_.imageView = vk_image.image_view_;
     vk_image.desc_image_info_.imageLayout = image_layout;
@@ -705,7 +755,7 @@ bool VkDemo::Create2DImage(vk_image_s& vk_image, VkFormat format, VkImageTiling 
     return true;
 }
 
-void VkDemo::Destroy2DImage(vk_image_s& vk_image) {
+void VkDemo::DestroyImage(vk_image_s& vk_image) {
     if (vk_image.image_view_) {
         vkDestroyImageView(vk_device_, vk_image.image_view_, nullptr);
     }
@@ -756,7 +806,7 @@ bool VkDemo::Load2DTexture(const char* filename,
 
     // VK_IMAGE_TILING_LINEAR: specifies linear tiling (texels are laid out in memory in row-major order, 
     //                         possibly with some padding on each row).
-    if (!Create2DImage(vk_image, format, VK_IMAGE_TILING_LINEAR, image_usage,
+    if (!Create2DImage(vk_image, 0, format, VK_IMAGE_TILING_LINEAR, image_usage,
         (uint32_t)pic.width_, (uint32_t)pic.height_, 1,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, sampler, image_layout))
@@ -850,7 +900,7 @@ bool VkDemo::Update2DTexture(const image_s& pic, vk_image_s& vk_image) {
     image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     image_memory_barrier.pNext = nullptr;
     image_memory_barrier.srcAccessMask = 0;
-    image_memory_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    image_memory_barrier.dstAccessMask = 0;
     image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// wrong: VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL
     image_memory_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -861,6 +911,7 @@ bool VkDemo::Update2DTexture(const image_s& pic, vk_image_s& vk_image) {
     image_memory_barrier.subresourceRange.levelCount = 1;
     image_memory_barrier.subresourceRange.baseArrayLayer = 0;
     image_memory_barrier.subresourceRange.layerCount = 1;
+    SetAccessMaskOfImageMemoryBarrier(image_memory_barrier);
 
     vkCmdPipelineBarrier(cmd_buffer_load_tex,
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -880,6 +931,240 @@ bool VkDemo::Update2DTexture(const image_s& pic, vk_image_s& vk_image) {
     vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
 
     return true;
+}
+
+bool VkDemo::LoadCubeMaps(const char* filename,
+    VkFormat format, VkImageUsageFlags image_usage,
+    VkSampler sampler, VkImageLayout image_layout, vk_image_s& vk_image) {
+
+/*
+            _________
+            |       |
+            | left  |
+     _______|_______|_______________
+    |       |       |       |       |
+    | back  | bottom| front | top   |
+    |_______|_______|_______|_______|
+            |       |
+            | right |
+            |_______|
+
+    // order: front, back, left, right, bottom, top
+*/
+
+
+    memset(&vk_image, 0, sizeof(vk_image));
+
+    char full_filename[MAX_PATH];
+
+    if (filename[0] == '/' || filename[1] == ':') {
+        Str_Copy(full_filename, MAX_PATH, filename);    // absolute push
+    }
+    else {
+        // relative path, load from textures folder
+        Str_SPrintf(full_filename, MAX_PATH, "%s/%s", textures_dir_, filename);
+    }
+
+    image_s pic = {};
+    if (!Img_Load(full_filename, pic)) {
+        printf("Failed to load texture \"%s\"\n", full_filename);
+        return false;
+    }
+
+    if (pic.format_ != image_format_t::R8G8B8A8) {
+        Img_Free(pic);
+        printf("\"%s\": only support R8G8B8A8\n", full_filename);
+        return false;
+    }
+
+    uint32_t face_w = pic.width_ / 4;
+    uint32_t face_h = pic.height_ / 3;
+
+    if (face_w != face_h) {
+        Img_Free(pic);
+        printf("\"%s\": not a cube map\n", full_filename);
+        return false;
+    }
+
+    size_t buf_sz = face_w * face_h * 4 * 6;
+
+    vk_buffer_s vk_buf = {};
+    if (!CreateBuffer(vk_buf, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, buf_sz))
+    {
+        Img_Free(pic);
+        printf("\"%s\": could not allocate buffer\n", full_filename);
+        return false;
+    }
+
+    void* vk_buf_ptr = MapBuffer(vk_buf);
+    if (!vk_buf_ptr) {
+        DestroyBuffer(vk_buf);
+        Img_Free(pic);
+        printf("\"%s\": map buffer error\n", full_filename);
+        return false;
+    }
+
+    byte_t* dst = (byte_t*)vk_buf_ptr;
+
+    // pair: x offset, y offset
+    std::array<std::pair<uint32_t, uint32_t>, 6> face_offsets = {
+        std::pair<uint32_t, uint32_t>(face_w * 2, face_h * 1),
+        std::pair<uint32_t, uint32_t>(face_w * 0, face_h * 1),
+        std::pair<uint32_t, uint32_t>(face_w * 1, face_h * 0),
+        std::pair<uint32_t, uint32_t>(face_w * 1, face_h * 2),
+        std::pair<uint32_t, uint32_t>(face_w * 1, face_h * 1),
+        std::pair<uint32_t, uint32_t>(face_w * 3, face_h * 1)
+    };
+
+    for (auto& it : face_offsets) {
+         
+        for (uint32_t y = 0; y < face_h; ++y) {
+            byte_t* src_line = pic.pixels_ + (pic.width_ * (it.second + y) + it.first) * 4;
+            byte_t* dst_line = dst + face_w * 4 * y;
+            memcpy(dst_line, src_line, face_w * 4);
+        }
+
+        dst += (face_w * face_h * 4);
+    }
+
+    UnmapBuffer(vk_buf);
+
+    // specify VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT for cube maps
+    // add VK_IMAGE_USAGE_TRANSFER_DST_BIT flag to use vkCmdCopyBufferToImage command
+
+    if (Create2DImage(vk_image, VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+        format, VK_IMAGE_TILING_OPTIMAL, image_usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT, face_w, face_h, 6 /* cube map has 6 faces */,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_CUBE,
+        sampler,
+        image_layout)) {
+
+
+        VkCommandPool command_pool = vk_command_pool_transient_;
+        VkCommandBuffer cmd_buffer_load_tex = VK_NULL_HANDLE;
+
+        VkCommandBufferAllocateInfo cmd_buffer_alloc_info = {};
+
+        cmd_buffer_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmd_buffer_alloc_info.pNext = nullptr;
+        cmd_buffer_alloc_info.commandPool = command_pool;
+        cmd_buffer_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmd_buffer_alloc_info.commandBufferCount = 1;
+
+        if (VK_SUCCESS != vkAllocateCommandBuffers(vk_device_, &cmd_buffer_alloc_info, &cmd_buffer_load_tex)) {
+            DestroyImage(vk_image);
+            DestroyBuffer(vk_buf);
+            Img_Free(pic);
+            return false;
+        }
+
+        VkCommandBufferBeginInfo cmdbuf_begin_info = {};
+
+        cmdbuf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cmdbuf_begin_info.pNext = nullptr;
+        cmdbuf_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        cmdbuf_begin_info.pInheritanceInfo = nullptr;
+
+        if (VK_SUCCESS != vkBeginCommandBuffer(cmd_buffer_load_tex, &cmdbuf_begin_info)) {
+            vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
+            DestroyImage(vk_image);
+            DestroyBuffer(vk_buf);
+            Img_Free(pic);
+            return false;
+        }
+
+
+        std::array<VkBufferImageCopy, 6> buffer_image_copy_array;
+
+        for (uint32_t i = 0; i < 6; ++i) {
+            buffer_image_copy_array[i].bufferOffset = i * face_w * face_h * 4;
+            buffer_image_copy_array[i].bufferRowLength = 0;
+            buffer_image_copy_array[i].bufferImageHeight = 0;
+            buffer_image_copy_array[i].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            buffer_image_copy_array[i].imageSubresource.mipLevel = 0;
+            buffer_image_copy_array[i].imageSubresource.baseArrayLayer = i;
+            buffer_image_copy_array[i].imageSubresource.layerCount = 1;
+            buffer_image_copy_array[i].imageOffset.x = 0;
+            buffer_image_copy_array[i].imageOffset.y = 0;
+            buffer_image_copy_array[i].imageOffset.z = 0;
+            buffer_image_copy_array[i].imageExtent.width = face_w;
+            buffer_image_copy_array[i].imageExtent.height = face_h;
+            buffer_image_copy_array[i].imageExtent.depth = 1;
+        }
+
+
+        VkImageMemoryBarrier image_memory_barrier = {};
+
+        image_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        image_memory_barrier.pNext = nullptr;
+        image_memory_barrier.srcAccessMask = 0;
+        image_memory_barrier.dstAccessMask = 0;
+        image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        image_memory_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        image_memory_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        image_memory_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        image_memory_barrier.image = vk_image.image_;
+        image_memory_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image_memory_barrier.subresourceRange.baseMipLevel = 0;
+        image_memory_barrier.subresourceRange.levelCount = 1;
+        image_memory_barrier.subresourceRange.baseArrayLayer = 0;
+        image_memory_barrier.subresourceRange.layerCount = 6;   // 6 faces
+        SetAccessMaskOfImageMemoryBarrier(image_memory_barrier);
+
+        vkCmdPipelineBarrier(cmd_buffer_load_tex,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0 /* dependencyFlags */,
+            0 /* memoryBarrierCount */, nullptr /* pMemoryBarriers */,
+            0 /* bufferMemoryBarrierCount */, nullptr /* pBufferMemoryBarries */,
+            1, &image_memory_barrier);
+
+        vkCmdCopyBufferToImage(
+            cmd_buffer_load_tex,
+            vk_buf.buffer_,
+            vk_image.image_,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            6,
+            buffer_image_copy_array.data());
+
+        // set image layout to image_layout
+        image_memory_barrier.srcAccessMask = 0;
+        image_memory_barrier.dstAccessMask = 0;
+        image_memory_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        image_memory_barrier.newLayout = image_layout;
+        SetAccessMaskOfImageMemoryBarrier(image_memory_barrier);
+
+        vkCmdPipelineBarrier(cmd_buffer_load_tex,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0 /* dependencyFlags */,
+            0 /* memoryBarrierCount */, nullptr /* pMemoryBarriers */,
+            0 /* bufferMemoryBarrierCount */, nullptr /* pBufferMemoryBarries */,
+            1, &image_memory_barrier);
+
+
+        if (VK_SUCCESS != vkEndCommandBuffer(cmd_buffer_load_tex)) {
+            vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
+            DestroyImage(vk_image);
+            DestroyBuffer(vk_buf);
+            Img_Free(pic);
+            return false;
+        }
+
+        SubmitCommandBufferAndWait(cmd_buffer_load_tex);
+
+        vkFreeCommandBuffers(vk_device_, command_pool, 1, &cmd_buffer_load_tex);
+        DestroyBuffer(vk_buf);
+        Img_Free(pic);
+
+        return true;
+    }
+    else {
+        DestroyBuffer(vk_buf);
+        Img_Free(pic);
+        return false;
+    }
 }
 
 void VkDemo::DestroyFramebuffer(VkFramebuffer& vk_framebuffer) {
@@ -975,6 +1260,7 @@ bool VkDemo::LoadShader(const char* filename, VkShaderModule& shader_module) con
     void* code = nullptr;
     int32_t code_len = 0;
     if (!File_LoadBinary32(fullfilename, code, code_len)) {
+        printf("load shader file \"%s\" failed.\n", fullfilename);
         return false;
     }
 

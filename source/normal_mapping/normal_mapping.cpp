@@ -193,8 +193,8 @@ bool NormalMappingDemo::LoadTextures() {
 }
 
 void NormalMappingDemo::FreeTextures() {
-	Destroy2DImage(texture_normal_);
-	Destroy2DImage(texture_color_);
+	DestroyImage(texture_normal_);
+	DestroyImage(texture_color_);
 }
 
 bool NormalMappingDemo::CreateUniformBuffers() {

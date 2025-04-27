@@ -87,7 +87,6 @@ vulkan helper
 COMMON_API const char* Vk_FormatToStr(VkFormat format);
 COMMON_API const char* Vk_PresentModelToStr(VkPresentModeKHR present_mode);
 
-
 COMMON_API void Vk_PushDescriptorSetLayoutBinding_UBO(std::vector<VkDescriptorSetLayoutBinding> & bindings,
     uint32_t binding, VkShaderStageFlags stage_flags);
 

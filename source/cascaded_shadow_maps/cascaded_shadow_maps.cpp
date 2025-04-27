@@ -345,7 +345,7 @@ void CascadedShadowMapsDemo::Shutdown() {
 		DestroyFramebuffer(shadow_maps_[i].framebuffer_);
 	}
 
-	Destroy2DImage(vk_image_depth_);
+	DestroyImage(vk_image_depth_);
 	DestroyRenderPass(vk_render_pass_depth_);
 	FreeTextures();
 	DestroySampler(vk_sampler_scene_);
@@ -599,8 +599,8 @@ bool CascadedShadowMapsDemo::LoadTextures() {
 }
 
 void CascadedShadowMapsDemo::FreeTextures() {
-	Destroy2DImage(texture_detail_);
-	Destroy2DImage(texture_terrain_);
+	DestroyImage(texture_detail_);
+	DestroyImage(texture_terrain_);
 }
 
 bool CascadedShadowMapsDemo::CreateRenderPass_Depth() {
@@ -669,7 +669,7 @@ bool CascadedShadowMapsDemo::CreateRenderPass_Depth() {
 }
 
 bool CascadedShadowMapsDemo::CreateDepthImage() {
-	return Create2DImage(vk_image_depth_, vk_shadow_map_depth_format_, VK_IMAGE_TILING_OPTIMAL,
+	return Create2DImage(vk_image_depth_, 0, vk_shadow_map_depth_format_, VK_IMAGE_TILING_OPTIMAL,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		DEPTH_FRAMEBUFFER_DIM, DEPTH_FRAMEBUFFER_DIM, SHADOW_MAP_COUNT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 		VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vk_sampler_depth_, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);

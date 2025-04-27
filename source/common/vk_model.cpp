@@ -273,7 +273,7 @@ void VkModel::Free() {
 			}
 
 			if (vk_mat.vk_texture_.image_) {
-				owner_->Destroy2DImage(vk_mat.vk_texture_);
+				owner_->DestroyImage(vk_mat.vk_texture_);
 			}
 		}
 		TEMP_FREE(vk_materials_);

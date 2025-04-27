@@ -289,8 +289,8 @@ int main(int argc, char** argv) {
 
 	//test_float16();
 
-	test_dds("ocean/perlin_noise.dds");
-	//test_dds("ocean/sky_cube.dds");
+	//test_dds("ocean/perlin_noise.dds");
+	test_dds("ocean/sky_cube.dds");
 	//test_dds("ocean/reflect_cube.dds");
 
 	return 0;
