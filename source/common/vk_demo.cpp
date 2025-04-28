@@ -1669,9 +1669,9 @@ bool VkDemo::CreatePipelineVertFrag(const create_pipeline_vert_frag_params_s& pa
         .polygonMode = params.polygon_mode_,
         .cullMode = params.cull_mode_,
         .frontFace = params.front_face_,
-        .depthBiasEnable = VK_FALSE,
-        .depthBiasConstantFactor = 0.0f,
-        .depthBiasClamp = 0.0f,
+        .depthBiasEnable = params.depth_bias_enable_,
+        .depthBiasConstantFactor = params.depth_bias_constant_factor_,
+        .depthBiasClamp = params.depth_bias_slope_factor_,
         .depthBiasSlopeFactor = 0.0f,
         .lineWidth = 1.0f
     };

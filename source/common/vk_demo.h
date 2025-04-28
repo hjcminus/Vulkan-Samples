@@ -227,6 +227,9 @@ protected:
         VkPolygonMode       polygon_mode_;
         VkCullModeFlags     cull_mode_;
         VkFrontFace         front_face_;
+        VkBool32            depth_bias_enable_;
+        float               depth_bias_constant_factor_;
+        float               depth_bias_slope_factor_;
         VkBool32            depth_test_enable_;
         VkBool32            depth_write_enable_;
         VkPipelineLayout    pipeline_layout_;
