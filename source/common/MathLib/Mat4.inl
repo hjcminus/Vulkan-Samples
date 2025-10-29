@@ -518,6 +518,7 @@ INLINE__ void Mat4<REAL>::LookAt(const Vec3<REAL> &eye, const Vec3<REAL> &center
 	up_.Normalize();
 
 	Vec3<REAL> side = Vec3<REAL>::CrossProduct(forward, up_);
+	up_ = Vec3<REAL>::CrossProduct(side, forward);
 
 	elem_[0][0] = side.x_;
 	elem_[1][0] = side.y_;
