@@ -377,7 +377,8 @@ void TriangleDemo::UpdateUniformBuffer() {
 	GetModelMatrix(model_mat);
 
 	if (revert_y_by_proj_mat_) {
-		proj_mat[1][1] *= -1.0f;	// revert y
+		// adjust for vulkan's inverted y-axis in clip space
+		proj_mat[1][1] *= -1.0f;
 	}
 
 	ubo_mvp.matrix_ = proj_mat * view_mat * model_mat;
